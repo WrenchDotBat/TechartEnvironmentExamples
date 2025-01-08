@@ -364,6 +364,14 @@
 		{
 			"Name": "LinuxDeviceProfileSelector",
 			"Enabled": false
+		},
+		{
+			"Name": "ModelingToolsEditorMode",
+			"Enabled": true
+		},
+		{
+			"Name": "StaticMeshEditorModeling",
+			"Enabled": true
 		}
 	]
 }
