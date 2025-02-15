@@ -117,25 +117,21 @@
 #define HAPI_UNREAL_ATTRIB_POSITION						HAPI_ATTRIB_POSITION
 #define HAPI_UNREAL_ATTRIB_ROTATION						"rot"
 #define HAPI_UNREAL_ATTRIB_SCALE						"scale"
-#define HAPI_UNREAL_ATTRIB_UNIFORM_SCALE					"pscale"
+#define HAPI_UNREAL_ATTRIB_UNIFORM_SCALE				"pscale"
 #define HAPI_UNREAL_ATTRIB_BBOX_MIN						"unreal_bbox_min"
 #define HAPI_UNREAL_ATTRIB_BBOX_MAX						"unreal_bbox_max"
 #define HAPI_UNREAL_ATTRIB_COLOR						HAPI_ATTRIB_COLOR
-#define HAPI_UNREAL_ATTRIB_LIGHTMAP_COLOR					"unreal_lightmap_color"
+#define HAPI_UNREAL_ATTRIB_LIGHTMAP_COLOR				"unreal_lightmap_color"
 #define HAPI_UNREAL_ATTRIB_ALPHA						"Alpha"
 #define HAPI_UNREAL_ATTRIB_UV							HAPI_ATTRIB_UV
 #define HAPI_UNREAL_ATTRIB_NORMAL						HAPI_ATTRIB_NORMAL
 #define HAPI_UNREAL_ATTRIB_TANGENTU						HAPI_ATTRIB_TANGENT
 #define HAPI_UNREAL_ATTRIB_TANGENTV						HAPI_ATTRIB_TANGENT2
-
+#define HAPI_UNREAL_ATTRIB_DISABLE_GAMMA_CORRECTION     "unreal_disable_gamma_correction"
 #define HAPI_UNREAL_ATTRIB_LANDSCAPE_TILE					"tile"
 // Always the name of the main landscape actor. 
 // Names for landscape tile actors will be taken from 'unreal_output_name'.
 #define HAPI_UNREAL_ATTRIB_LANDSCAPE_SHARED_ACTOR_NAME		"unreal_landscape_shared_actor_name"
-// This tile_actor_type succeeds the 'unreal_landscape_streaming_proxy' (v1) attribute.
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_TILE_ACTOR_TYPE		"unreal_landscape_tile_actor_type"
-// This attribute is for backwards compatibility only.
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_STREAMING_PROXY		"unreal_landscape_streaming_proxy"
 
 #define HAPI_UNREAL_ATTRIB_LANDSCAPE_LAYER_MIN				"unreal_landscape_layer_min"
 #define HAPI_UNREAL_ATTRIB_LANDSCAPE_LAYER_MAX				"unreal_landscape_layer_max"
@@ -170,7 +166,7 @@
 #define HAPI_UNREAL_ATTRIB_LOD_SCREENSIZE					"lod_screensize"
 #define HAPI_UNREAL_ATTRIB_LOD_SCREENSIZE_PREFIX			"lod"
 #define HAPI_UNREAL_ATTRIB_LOD_SCREENSIZE_POSTFIX			"_screensize"
-#define HAPI_UNREAL_ATTRIB_TAG_PREFIX						"unreal_tag_"
+#define HAPI_UNREAL_ATTRIB_TAG_PREFIX						"unreal_uproperty_tag_"
 #define HAPI_UNREAL_ATTRIB_TAG_KEEP							"unreal_keep_tags"
 #define HAPI_UNREAL_ATTRIB_HLOD_LAYER                       "unreal_hlod_layer"
 
@@ -218,8 +214,12 @@
 
 #define HAPI_UNREAL_ATTRIB_LANDSCAPE_WRITE_LOCKED_LAYERS    "unreal_landscape_write_locked_layer"
 #define HAPI_UNREAL_ATTRIB_LANDSCAPE_LOCK_LAYERS            "unreal_landscape_lock_layer"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_LAYER_NORMALIZE        "unreal_landscape_layer_normalize"
 
 #define HAPI_UNREAL_ATTRIB_CREATE_DATA_LAYERS               "unreal_create_data_layers"
+
+#define HAPI_UNREAL_ATTRIB_CREATE_DEFAULT_PHYSICS_ASSET     "unreal_create_default_physics_asset"
+#define HAPI_UNREAL_ATTRIB_PHYSICS_BONE                     "unreal_physics_bone"
 
 // Enable or disable the NoWeightBlend setting for landscape paint layers. 
 // Note this attribute supercedes the unreal_landscape_layer_nonweightblended string attribute.
@@ -258,28 +258,32 @@
 
 // landscape splines
 #define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE									"unreal_landscape_spline"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX							"unreal_landscape_spline_"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_TARGET_LANDSCAPE				HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "target_landscape"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONTROL_POINT_ID				HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "control_point_id"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONTROL_POINT_PAINT_LAYER_NAME	HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "control_point_paint_layer_name"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONTROL_POINT_RAISE_TERRAIN		HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "control_point_raise_terrain"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONTROL_POINT_LOWER_TERRAIN		HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "control_point_lower_terrain"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONTROL_POINT_MESH				HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "control_point_mesh"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_SEGMENT_PAINT_LAYER_NAME	    HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "segment_paint_layer_name"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_SEGMENT_RAISE_TERRAIN			HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "segment_raise_terrain"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_SEGMENT_LOWER_TERRAIN			HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "segment_lower_terrain"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_SEGMENT_MESH					HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "segment_mesh"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_TARGET_LANDSCAPE				"unreal_landscape_spline_target_landscape"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONTROL_POINT_ID				"unreal_landscape_spline_control_point_id"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONTROL_POINT_PAINT_LAYER_NAME	"unreal_landscape_spline_control_point_paint_layer_name"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONTROL_POINT_RAISE_TERRAIN		"unreal_landscape_spline_control_point_raise_terrain"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONTROL_POINT_LOWER_TERRAIN		"unreal_landscape_spline_control_point_lower_terrain"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONTROL_POINT_MESH				"unreal_landscape_spline_control_point_mesh"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_SEGMENT_PAINT_LAYER_NAME	    "unreal_landscape_spline_segment_paint_layer_name"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_SEGMENT_RAISE_TERRAIN			"unreal_landscape_spline_segment_raise_terrain"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_SEGMENT_LOWER_TERRAIN			"unreal_landscape_spline_segment_lower_terrain"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_SEGMENT_MESH					"unreal_landscape_spline_segment_mesh"
 #define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_MESH_MATERIAL_OVERRIDE_SUFFIX	"_material_override"
 #define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_MESH_SCALE_SUFFIX				"_scale"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_MESH_SOCKET_NAME	            HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "mesh_socket_name"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_TANGENT_LENGTH		            HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "tangent_length"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONNECTION0_MESH_SOCKET_NAME	HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "connection0_mesh_socket_name"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONNECTION1_MESH_SOCKET_NAME	HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "connection1_mesh_socket_name"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONNECTION0_TANGENT_LENGTH		HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "connection0_tangent_length"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONNECTION1_TANGENT_LENGTH		HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "connection1_tangent_length"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_HALF_WIDTH						HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "half_width"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_SIDE_FALLOFF					HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "side_falloff"
-#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_END_FALLOFF 					HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_PREFIX "end_falloff"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_MESH_CENTER_ADJUST_SUFFIX       "_center_adjust"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_MESH_SOCKET_NAME	            "unreal_landscape_spline_mesh_socket_name"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_TANGENT_LENGTH		            "unreal_landscape_spline_tangent_length"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONNECTION0_MESH_SOCKET_NAME	"unreal_landscape_spline_connection0_mesh_socket_name"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONNECTION1_MESH_SOCKET_NAME	"unreal_landscape_spline_connection1_mesh_socket_name"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONNECTION0_TANGENT_LENGTH		"unreal_landscape_spline_connection0_tangent_length"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_CONNECTION1_TANGENT_LENGTH		"unreal_landscape_spline_connection1_tangent_length"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_HALF_WIDTH						"unreal_landscape_spline_half_width"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_SIDE_FALLOFF					"unreal_landscape_spline_side_falloff"
+#define HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE_END_FALLOFF 					"unreal_landscape_spline_end_falloff"
+
+#define HAPI_UNREAL_ATTRIB_SKELETON                         "unreal_skeleton"
+#define HAPI_UNREAL_ATTRIB_PHYSICS_ASSET                    "unreal_physics_asset"
+#define HAPI_UNREAL_ATTRIB_SKELETON_IMPORT_SCALE            "unreal_sk_import_scale"
 
 #define HAPI_UNREAL_ATTRIB_GENERIC_UPROP_PREFIX				"unreal_uproperty_"
 #define HAPI_UNREAL_ATTRIB_GENERIC_MAT_PARAM_PREFIX			"unreal_material_parameter_"
@@ -308,6 +312,9 @@
 #define HAPI_UNREAL_ATTRIB_OUTPUT_UNREAL_CURVE_CLOSED		"unreal_output_curve_closed"
 // We only support Unreal spline outputs for now
 //#define HAPI_UNREAL_ATTRIB_OUTPUT_HOUDINI_CURVE				"houdini_output_curve"
+
+// PDG Attributes
+#define HAPI_UNREAL_ATTRIB_PDG_ASSET                        "unreal_pdg_asset"
 
 // Geometry Node
 #define HAPI_UNREAL_PARAM_TRANSLATE							"t"
@@ -352,6 +359,7 @@
 
 #define HAPI_UNREAL_GROUP_INVISIBLE_COLLISION_PREFIX		TEXT("collision_geo")
 #define HAPI_UNREAL_GROUP_RENDERED_COLLISION_PREFIX			TEXT("rendered_collision_geo")
+#define HAPI_UNREAL_GROUP_RENDERED_PREFIX			        TEXT("rendered")
 
 #define HAPI_UNREAL_GROUP_INVISIBLE_UCX_COLLISION_PREFIX	TEXT("collision_geo_ucx")
 #define HAPI_UNREAL_GROUP_RENDERED_UCX_COLLISION_PREFIX		TEXT("rendered_collision_geo_ucx")
@@ -401,6 +409,8 @@
 
 #define HAPI_UNREAL_PARAM_MAP_DIFFUSE_COLOR_SPACE		"basecolor_textureColorSpace"
 
+#define HAPI_UNREAL_PARAM_MAP_DIFFUSE_USE_POINT_COLOR    "basecolor_usePointColor"
+
 // Materials Normal.
 #define HAPI_UNREAL_PARAM_MAP_NORMAL_OGL				"ogl_normalmap"
 
@@ -416,11 +426,11 @@
 #define HAPI_UNREAL_PARAM_MAP_NORMAL_COLOR_SPACE		"normalTexColorSpace"
 
 // Materials Specular.
-#define HAPI_UNREAL_PARAM_COLOR_SPECULAR_OGL			"ogl_spec"
+#define HAPI_UNREAL_PARAM_COLOR_SPECULAR_OGL			"ogl_reflect"           //"ogl_spec"
 #define HAPI_UNREAL_PARAM_COLOR_SPECULAR				"reflect"
 
-#define HAPI_UNREAL_PARAM_MAP_SPECULAR_OGL				"ogl_specmap"
-#define HAPI_UNREAL_PARAM_MAP_SPECULAR_OGL_ENABLED		"ogl_use_specmap"
+#define HAPI_UNREAL_PARAM_MAP_SPECULAR_OGL				"ogl_reflect_map"       //"ogl_specmap"
+#define HAPI_UNREAL_PARAM_MAP_SPECULAR_OGL_ENABLED		"ogl_use_reflect_map"   //"ogl_use_specmap"
 
 #define HAPI_UNREAL_PARAM_MAP_SPECULAR					"reflect_texture"
 #define HAPI_UNREAL_PARAM_MAP_SPECULAR_ENABLED			"reflect_useTexture"
@@ -526,3 +536,4 @@
 #define HAPI_UNREAL_PARAM_PACKED_FRAGMENTS                                              "packedfragments"
 
 #define HOUDINI_DATA_LAYER_PREFIX                                                        "unreal_data_layer_"
+

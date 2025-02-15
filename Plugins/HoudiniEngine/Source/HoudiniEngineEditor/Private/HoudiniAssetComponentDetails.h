@@ -43,9 +43,6 @@ public:
 	// Constructor.
 	FHoudiniAssetComponentDetails();
 
-	// Destructor.
-	virtual ~FHoudiniAssetComponentDetails();
-
 	// IDetailCustomization methods.
 	virtual void CustomizeDetails(IDetailLayoutBuilder& DetailBuilder) override;
 
@@ -62,6 +59,9 @@ private:
 	// Adds a text row indicate we're using a Houdini indie license
 	void AddIndieLicenseRow(IDetailCategoryBuilder& InCategory);
 
+	// Adds a text row indicate we're using a Houdini Edu license
+	void AddEducationLicenseRow(IDetailCategoryBuilder& InCategory);
+
 	// Adds a category for baking options
 	void AddBakeMenu(IDetailCategoryBuilder& InCategory, UHoudiniAssetComponent* HAC);
 
@@ -69,9 +69,8 @@ private:
 	FReply OnThumbnailDoubleClick(
 		const FGeometry& InMyGeometry, const FPointerEvent& InMouseEvent, UObject* Object);
 
-
-private:
-
+	// TSharedPtr<SWidget> ConstructActionMenu(TWeakObjectPtr<UHoudiniAssetComponent> HAC);
+	
 	// Components which are being customized.
 	TArray<TWeakObjectPtr<UHoudiniAssetComponent>> HoudiniAssetComponents;
 
@@ -86,6 +85,4 @@ private:
 
 	// Structure holding the HoudiniAsset details
 	TSharedPtr<FHoudiniEngineDetails, ESPMode::NotThreadSafe> HoudiniEngineDetails;
-
-
 };

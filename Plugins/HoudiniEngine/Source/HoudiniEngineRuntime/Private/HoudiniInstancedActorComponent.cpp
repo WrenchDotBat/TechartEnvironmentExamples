@@ -30,10 +30,10 @@
 #include "HoudiniRuntimeSettings.h"
 #include "HoudiniEngineRuntimePrivatePCH.h"
 #include "HoudiniPluginSerializationVersion.h"
-#include "HoudiniCompatibilityHelpers.h"
 
 #include "Components/InstancedStaticMeshComponent.h"
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
+#include "Engine/Light.h"
 #include "Engine/World.h"
 #include "Internationalization/Internationalization.h"
 #include "Runtime/Launch/Resources/Version.h"
@@ -46,9 +46,10 @@
 
 #define LOCTEXT_NAMESPACE HOUDINI_LOCTEXT_NAMESPACE 
 
-UHoudiniInstancedActorComponent::UHoudiniInstancedActorComponent( const FObjectInitializer& ObjectInitializer )
-: Super( ObjectInitializer )
-, InstancedObject( nullptr )
+UHoudiniInstancedActorComponent::UHoudiniInstancedActorComponent(const FObjectInitializer& ObjectInitializer)
+: Super(ObjectInitializer)
+, InstancedObject(nullptr)
+, InstancedActorClass(nullptr)
 {
 	//
 	// 	Set default component properties.
@@ -78,33 +79,17 @@ UHoudiniInstancedActorComponent::Serialize(FArchive& Ar)
 	if (bLegacyComponent)
 	{
 		// Legacy serialization
-		// Either try to convert or skip depending on the setting value
-		const UHoudiniRuntimeSettings * HoudiniRuntimeSettings = GetDefault<UHoudiniRuntimeSettings>();
-		bool bEnableBackwardCompatibility = HoudiniRuntimeSettings->bEnableBackwardCompatibility;
-		if (bEnableBackwardCompatibility)
+		HOUDINI_LOG_WARNING(TEXT("Loading deprecated version of UHoudiniInstancedActorComponent : serialization will be skipped."));
+
+		Super::Serialize(Ar);
+
+		// Skip v1 Serialized data
+		if (FLinker* Linker = Ar.GetLinker())
 		{
-			HOUDINI_LOG_WARNING(TEXT("Loading deprecated version of UHoudiniInstancedActorComponent : converting v1 object to v2."));
-
-			Super::Serialize(Ar);
-
-			UHoudiniInstancedActorComponent_V1* CompatibilityIAC = NewObject<UHoudiniInstancedActorComponent_V1>();
-			CompatibilityIAC->Serialize(Ar);
-			CompatibilityIAC->UpdateFromLegacyData(this);
-		}
-		else
-		{
-			HOUDINI_LOG_WARNING(TEXT("Loading deprecated version of UHoudiniInstancedActorComponent : serialization will be skipped."));
-
-			Super::Serialize(Ar);
-
-			// Skip v1 Serialized data
-			if (FLinker* Linker = Ar.GetLinker())
-			{
-				int32 const ExportIndex = this->GetLinkerIndex();
-				FObjectExport& Export = Linker->ExportMap[ExportIndex];
-				Ar.Seek(InitialOffset + Export.SerialSize);
-				return;
-			}
+			int32 const ExportIndex = this->GetLinkerIndex();
+			FObjectExport& Export = Linker->ExportMap[ExportIndex];
+			Ar.Seek(InitialOffset + Export.SerialSize);
+			return;
 		}
 	}
 	else
@@ -125,14 +110,39 @@ void UHoudiniInstancedActorComponent::OnComponentDestroyed( bool bDestroyingHier
 void 
 UHoudiniInstancedActorComponent::AddReferencedObjects(UObject * InThis, FReferenceCollector & Collector )
 {
+    Super::AddReferencedObjects(InThis, Collector);
+
     UHoudiniInstancedActorComponent * ThisHIAC = Cast< UHoudiniInstancedActorComponent >(InThis);
     if ( IsValid(ThisHIAC) )
     {
         if ( IsValid(ThisHIAC->InstancedObject) )
-            Collector.AddReferencedObject( ThisHIAC->InstancedObject, ThisHIAC );
+            Collector.AddReferencedObject(
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 4
+				ObjectPtrWrap(ThisHIAC->InstancedObject),
+#else
+				ThisHIAC->InstancedObject,
+#endif
+				ThisHIAC );
 
-        Collector.AddReferencedObjects(ThisHIAC->InstancedActors, ThisHIAC );
+        Collector.AddReferencedObjects(
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 4
+			ObjectPtrWrap(ThisHIAC->InstancedActors),
+#else
+			ThisHIAC->InstancedActors,
+#endif
+			ThisHIAC );
     }
+}
+
+
+void
+UHoudiniInstancedActorComponent::SetInstancedObject(class UObject* InObject)
+{
+	if (InObject == InstancedObject)
+		return;
+
+	InstancedObject = InObject;
+	InstancedActorClass = nullptr;
 }
 
 
@@ -151,6 +161,7 @@ UHoudiniInstancedActorComponent::AddInstance(const FTransform& InstanceTransform
 bool
 UHoudiniInstancedActorComponent::SetInstanceAt(const int32& Idx, const FTransform& InstanceTransform, AActor * NewActor)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UHoudiniInstancedActorComponent::SetInstanceAt);
 	if (!IsValid(NewActor))
 		return false;
 
@@ -182,22 +193,31 @@ UHoudiniInstancedActorComponent::SetInstanceTransformAt(const int32& Idx, const 
 void 
 UHoudiniInstancedActorComponent::ClearAllInstances()
 {
-    for ( AActor* Instance : InstancedActors )
-    {
-        if (IsValid(Instance))
-        {
-            UWorld* const World = Instance->GetWorld();
-            if (IsValid(World))
-                World->DestroyActor(Instance);
-        }
-    }
-    InstancedActors.Empty();
+	TRACE_CPUPROFILER_EVENT_SCOPE(UHoudiniInstancedActorComponent::ClearAllInstances);
+
+	for(AActor* Instance : InstancedActors)
+	{
+		if(IsValid(Instance) && IsValid(Instance->GetWorld()))
+		{
+			// Lights can take a relatively long time to destroy their lighting caches. Oddly,
+			// setting to moveable prevents this.
+			ALight* Light = Cast<ALight>(Instance);
+			if (IsValid(Light))
+				Light->SetMobility(EComponentMobility::Movable);
+
+			Instance->GetWorld()->DestroyActor(Instance);
+		}
+
+	}
+
+	InstancedActors.Empty();
 }
 
 
 void
 UHoudiniInstancedActorComponent::SetNumberOfInstances(const int32& NewInstanceNum)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UHoudiniInstancedActorComponent::SetNumberOfInstances);
 	int32 OldInstanceNum = InstancedActors.Num();
 
 	// If we want less instances than we already have, destroy the extra properly
@@ -223,6 +243,8 @@ UHoudiniInstancedActorComponent::SetNumberOfInstances(const int32& NewInstanceNu
 void 
 UHoudiniInstancedActorComponent::OnComponentCreated()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(UHoudiniInstancedActorComponent::OnComponentCreated);
+
     Super::OnComponentCreated();
 
     // If our instances are parented to another actor we should duplicate them

@@ -144,7 +144,9 @@ UHoudiniGeoFactory::CanReimport(UObject * Obj, TArray<FString>& OutFilenames)
 
 	if (ImportData)
 	{
-		if (FPaths::GetExtension(ImportData->GetFirstFilename()).Contains(TEXT("bgeo")))
+		FString FileExtension = FPaths::GetExtension(ImportData->GetFirstFilename());
+		if (FileExtension.Contains(TEXT("bgeo"))
+			|| FileExtension.Contains(TEXT("sc")))
 		{
 			ImportData->ExtractFilenames(OutFilenames);
 			return true;
@@ -179,8 +181,8 @@ UHoudiniGeoFactory::Import(UClass* InClass, UPackage* InParent, const FString & 
 	GEditor->GetEditorSubsystem<UImportSubsystem>()->BroadcastAssetPreImport(this, InClass, InParent, FName(FileName), TEXT("Houdini GEO"));
 
 	// Create a new Geo importer
-	TArray<UHoudiniOutput*> DummyOldOutputs;
-	TArray<UHoudiniOutput*> NewOutputs;
+	TArray<TObjectPtr<UHoudiniOutput>> DummyOldOutputs;
+	TArray<TObjectPtr<UHoudiniOutput>> NewOutputs;
 	UHoudiniGeoImporter* BGEOImporter = NewObject<UHoudiniGeoImporter>(this);
 	BGEOImporter->AddToRoot();
 
@@ -239,25 +241,13 @@ UHoudiniGeoFactory::Import(UClass* InClass, UPackage* InParent, const FString & 
 	if (!BGEOImporter->BuildOutputsForNode(NodeId, DummyOldOutputs, NewOutputs))
 		return FailImportAndReturnNull();
 
-	// 5. Create the static meshes in the outputs
+	// 5. Create all the objects using the outputs
 	const FHoudiniStaticMeshGenerationProperties& StaticMeshGenerationProperties = FHoudiniEngineRuntimeUtils::GetDefaultStaticMeshGenerationProperties();
 	const FMeshBuildSettings& MeshBuildSettings = FHoudiniEngineRuntimeUtils::GetDefaultMeshBuildSettings();
-	if (!BGEOImporter->CreateStaticMeshes(NewOutputs, InParent, PackageParams, StaticMeshGenerationProperties, MeshBuildSettings))
+	if (!BGEOImporter->CreateObjectsFromOutputs(NewOutputs, PackageParams, StaticMeshGenerationProperties, MeshBuildSettings))
 		return FailImportAndReturnNull();
 
-	// 6. Create the curves in the outputs
-	if (!BGEOImporter->CreateCurves(NewOutputs, InParent, PackageParams))
-		return FailImportAndReturnNull();
-
-	// 7. Create the landscape in the outputs
-	if (!BGEOImporter->CreateLandscapes(NewOutputs, InParent, PackageParams))
-		return FailImportAndReturnNull();
-
-	// 8. Create the instancers in the outputs
-	if (!BGEOImporter->CreateInstancers(NewOutputs, InParent, PackageParams))
-		return FailImportAndReturnNull();
-
-	// 9. Delete the created  node in Houdini
+	// 6. Delete the created node in Houdini
 	if (!BGEOImporter->DeleteCreatedNode(NodeId))
 	{
 		// Not good, but not fatal..

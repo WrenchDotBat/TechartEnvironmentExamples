@@ -33,9 +33,10 @@
 #include "Engine/SkeletalMesh.h"
 #include "PackageTools.h"
 #include "ObjectTools.h"
-#include "Engine/StaticMesh.h"
 #include "UObject/MetaData.h"
+#include "Engine/StaticMesh.h"
 #include "Animation/Skeleton.h"
+#include "Animation/AnimSequence.h"
 #include "FoliageType_InstancedStaticMesh.h"
 #if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 3
 	#include "GeometryCollection/GeometryCollectionObject.h"
@@ -378,7 +379,22 @@ FHoudiniPackageParams::CreatePackageForObject(FString& OutPackageName, int32 InB
 				}
 			}
 		}
-		
+
+		// If we are not in CreateNewAssets mode, we might have created a package that already exists, and saving/overwriting it will fail!
+		// We probably should do the FindPackage/LoadPackage logic and skip the CreatePackage if successful,
+		// but that might confuse existing logic relying on getting a fresh package.
+		// (There is some logic to deal with this in CreateObjectAndPackage(), but due to not returning existing packages it seems unused.)
+		//
+		// Instead we do something similar the save logic:
+		// - If it encounters a new package, but the package already exists on disk it errors
+		// - Otherwise it marks the new package as "FullyLoaded" and writes it to disk.
+		//   To handle the situation in first bullet we mark it as FullyLoaded here.
+		if (FPackageName::DoesPackageExist(FPackagePath::FromPackageNameChecked(NewPackage->GetName())))
+		{
+			HOUDINI_LOG_WARNING(TEXT("Package already exists on disk. MarkAsFullyLoaded() to overwrite %s"), *NewPackage->GetName());
+			NewPackage->MarkAsFullyLoaded();
+		}
+
 		break;
 	}
 

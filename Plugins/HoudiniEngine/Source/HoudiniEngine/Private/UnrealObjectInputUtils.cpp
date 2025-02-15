@@ -1,4 +1,4 @@
-﻿#include "UnrealObjectInputUtils.h"
+#include "UnrealObjectInputUtils.h"
 
 #include "UObject/Object.h"
 #include "LandscapeSplinesComponent.h"
@@ -333,6 +333,8 @@ FUnrealObjectInputUtils::BuildMeshInputObjectIdentifiers(
 	FUnrealObjectInputIdentifier& OutReferenceNode,
 	TArray<FUnrealObjectInputIdentifier>& OutPerOptionIdentifiers)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FUnrealObjectInputUtils::BuildMeshInputObjectIdentifiers);
+
 	FUnrealObjectInputOptions DefaultOptions;
 	DefaultOptions.bImportAsReference = false;
 	DefaultOptions.bImportAsReferenceRotScaleEnabled = false;
@@ -569,9 +571,6 @@ FUnrealObjectInputUtils::ConnectReferencedNodesToMerge(const FUnrealObjectInputI
 	if (!AreHAPINodesValid(InRefNodeIdentifier))
 		return false;
 	
-	if (!AreReferencedHAPINodesValid(InRefNodeIdentifier))
-		return false;
-
 	IUnrealObjectInputManager* const Manager = FUnrealObjectInputManager::Get();
 	if (!Manager)
 		return false;
@@ -617,6 +616,9 @@ FUnrealObjectInputUtils::ConnectReferencedNodesToMerge(const FUnrealObjectInputI
 	int32 InputIndex = 0;
 	for (const FUnrealObjectInputHandle& Handle : ReferencedNodes)
 	{
+		if (!Handle.IsValid())
+			continue;
+
 		HAPI_NodeId NodeId = -1;
 		if (!GetHAPINodeId(Handle, NodeId))
 			continue;
@@ -687,6 +689,8 @@ FUnrealObjectInputUtils::CreateOrUpdateReferenceInputMergeNode(
 	const bool bInConnectReferencedNodes,
 	const bool& bInputNodesCanBeDeleted)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FUnrealObjectInputUtils::CreateOrUpdateReferenceInputMergeNode);
+
 	// Identifier must be valid and for a reference node
 	if (!InIdentifier.IsValid() || InIdentifier.GetNodeType() != EUnrealObjectInputNodeType::Reference)
 		return false;

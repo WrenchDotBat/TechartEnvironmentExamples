@@ -29,11 +29,14 @@
 #include "HoudiniEngine.h"
 #include "HoudiniEngineUtils.h"
 #include "LevelEditorMenuContext.h"
-#include "NaniteSceneProxy.h"
+//#include "NaniteSceneProxy.h"
+#include "HoudiniEngineAttributes.h"
 #include "HAPI/HAPI_Common.h"
 #include "WorldPartition/DataLayer/WorldDataLayers.h"
 #include "HoudiniPackageParams.h"
 #include "DataLayer/DataLayerEditorSubsystem.h"
+#include "Landscape.h"
+#include "LandscapeStreamingProxy.h"
 
 #if HOUDINI_ENABLE_DATA_LAYERS
 #include "WorldPartition/DataLayer/DataLayerAsset.h"
@@ -43,27 +46,92 @@
 //#include "DataLayer/DataLayerEditorSubsystem.h"
 #endif
 
-void FHoudiniDataLayerUtils::ApplyDataLayersToActor(const FHoudiniPackageParams& Params, AActor* Actor, const TArray<FHoudiniDataLayer>& Layers)
+void FHoudiniDataLayerUtils::ApplyDataLayersToActor(AActor* Actor, TArray<FHoudiniDataLayer> & DataLayers, TMap<FString, UDataLayerInstance*>& DataLayerLookup)
 {
 #if HOUDINI_ENABLE_DATA_LAYERS
-    UWorld* World = Actor->GetWorld();
 
-	if (Layers.Num() == 0)
-		return;
-
-    AWorldDataLayers* WorldDataLayers = World->GetWorldDataLayers();
-    if (!WorldDataLayers)
+    for (auto& Layer : DataLayers)
     {
-        HOUDINI_LOG_ERROR(TEXT("Unable to apply Data Layer because this map is not world partitioned."));
-        return;
+		UDataLayerInstance** DataLayerInstance = DataLayerLookup.Find(Layer.Name);
+		if(DataLayerInstance)
+			(*DataLayerInstance)->AddActor(Actor);
     }
 
-    for (auto& Layer : Layers)
-    {
-        AddActorToLayer(Params, WorldDataLayers, Actor, Layer);
-    }
+	if (ALandscape* Landscape = Cast<ALandscape>(Actor))
+	{
+
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 1
+		TArray<TWeakObjectPtr<ALandscapeStreamingProxy>> Proxies = Landscape->GetLandscapeInfo()->StreamingProxies;
+#else
+		TArray<TObjectPtr<ALandscapeStreamingProxy>> Proxies = Proxy->GetLandscapeInfo()->Proxies;
+#endif
+
+		for(TWeakObjectPtr<ALandscapeStreamingProxy> Child : Proxies)
+		{
+			ALandscapeStreamingProxy* LandscapeProxy = Child.Get();
+			if (LandscapeProxy)
+			{
+				for(auto& Layer : DataLayers)
+				{
+					UDataLayerInstance** DataLayerInstance = DataLayerLookup.Find(Layer.Name);
+					if(DataLayerInstance)
+						(*DataLayerInstance)->AddActor(LandscapeProxy);
+				}
+			}
+		}
+	}
 #endif
 }
+
+#if HOUDINI_ENABLE_DATA_LAYERS
+UDataLayerInstance * FHoudiniDataLayerUtils::FindOrCreateDataLayerInstance(
+	const FHoudiniPackageParams& Params, 
+	AWorldDataLayers* WorldDataLayers, 
+	const FHoudiniDataLayer& Layer)
+{
+	// Find the Data Layer Instance for this actor.
+	UDataLayerInstance* TargetDataLayerInstance = nullptr;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 4
+	WorldDataLayers->ForEachDataLayerInstance([&](UDataLayerInstance* DataLayer)
+#else
+	WorldDataLayers->ForEachDataLayer([&](UDataLayerInstance* DataLayer)
+#endif
+		{
+			FString DataLayerName = DataLayer->GetDataLayerShortName();
+			if(DataLayerName != Layer.Name)
+				return true;
+
+			TargetDataLayerInstance = DataLayer;
+			return false;
+		});
+
+	if(!TargetDataLayerInstance)
+	{
+		if(Layer.bCreateIfNeeded)
+		{
+			UDataLayerAsset* DataLayerAsset = CreateDataLayerAsset(Params, Layer.Name);
+
+			FDataLayerCreationParameters CreationParams;
+			CreationParams.DataLayerAsset = DataLayerAsset;
+			CreationParams.WorldDataLayers = WorldDataLayers;
+			TargetDataLayerInstance = UDataLayerEditorSubsystem::Get()->CreateDataLayerInstance(CreationParams);
+
+			if(!TargetDataLayerInstance)
+			{
+				HOUDINI_LOG_ERROR(TEXT("Could not create Data Layer: %s"), *Layer.Name);
+				return nullptr;
+			}
+		}
+		else
+		{
+			HOUDINI_LOG_WARNING(TEXT("Could not find Data Layer: %s. Set " HAPI_UNREAL_ATTRIB_CREATE_DATA_LAYERS
+				" to create a default data layer asset."), *Layer.Name);
+			return nullptr;
+		}
+	}
+	return TargetDataLayerInstance;
+}
+#endif
 
 #if HOUDINI_ENABLE_DATA_LAYERS
 void FHoudiniDataLayerUtils::AddActorToLayer(
@@ -72,76 +140,94 @@ void FHoudiniDataLayerUtils::AddActorToLayer(
 	AActor* Actor,
 	const FHoudiniDataLayer& Layer)
 {
-	// Find the Data Layer Instance for this actor.
-	UDataLayerInstance* TargetDataLayerInstance = nullptr;
-	WorldDataLayers->ForEachDataLayer([&](UDataLayerInstance* DataLayer)
-		{
-			FString DataLayerName = DataLayer->GetDataLayerShortName();
-			if (DataLayerName != Layer.Name)
-				return true;
-
-			TargetDataLayerInstance = DataLayer;
-			return false;
-		});
-
-	if (!TargetDataLayerInstance)
-	{
-		if (Layer.bCreateIfNeeded)
-		{
-			UDataLayerAsset * DataLayerAsset = CreateDataLayerAsset(Params, Layer.Name);
-
-			FDataLayerCreationParameters CreationParams;
-			CreationParams.DataLayerAsset = DataLayerAsset;
-			CreationParams.WorldDataLayers = WorldDataLayers;
-			TargetDataLayerInstance = UDataLayerEditorSubsystem::Get()->CreateDataLayerInstance(CreationParams);
-
-			if (!TargetDataLayerInstance)
-			{
-				HOUDINI_LOG_ERROR(TEXT("Could not create Data Layer: %s"), *Layer.Name);
-				return;
-			}
-		}
-		else
-		{
-			HOUDINI_LOG_WARNING(TEXT("Could not find Data Layer: %s. Set " HAPI_UNREAL_ATTRIB_CREATE_DATA_LAYERS
-								" to create a default data layer asset."), *Layer.Name);
-			return;
-		}
-	}
-
-	TargetDataLayerInstance->AddActor(Actor);
+	UDataLayerInstance* DataLayerInstance = FindOrCreateDataLayerInstance(Params, WorldDataLayers, Layer);
+	if (DataLayerInstance)
+		DataLayerInstance->AddActor(Actor);
 }
 #endif
 
+TArray<FHoudiniAttributeDataLayer>
+FHoudiniDataLayerUtils::GetDataLayers(HAPI_NodeId NodeId, HAPI_PartId PartId, HAPI_GroupType GroupType)
+{
+	TArray<FHoudiniAttributeDataLayer> Results;
+	HAPI_PartInfo PartInfo;
+	FHoudiniApi::PartInfo_Init(&PartInfo);
+	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetPartInfo(FHoudiniEngine::Get().GetSession(), NodeId, PartId, &PartInfo), {});
+
+	Results.SetNum(PartInfo.pointCount);
+
+#if HOUDINI_ENABLE_DATA_LAYERS
+	// Get a list of all groups this part MAY be a member of.
+	TArray<FString> RawGroupNames;
+	bool bResult = FHoudiniEngineUtils::HapiGetGroupNames(NodeId, PartId, GroupType, false, RawGroupNames);
+
+	TArray<int32> CreateFlags;
+
+	FHoudiniHapiAccessor Accessor;
+	Accessor.Init(NodeId, PartId, HAPI_UNREAL_ATTRIB_CREATE_DATA_LAYERS);
+	bool bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_POINT, CreateFlags);
+	int bDefaultCreateFlags = 0;
+	Accessor.GetAttributeFirstValue(HAPI_ATTROWNER_DETAIL, bDefaultCreateFlags);
+
+	// Check each group to see if we're a member.
+	FString NamePrefix = TEXT(HOUDINI_DATA_LAYER_PREFIX);
+	for(FString DataLayerName : RawGroupNames)
+	{
+		// Is a group that specifies an unreal data layer?
+		if(!DataLayerName.StartsWith(NamePrefix))
+			continue;
+
+		// Is a member of the group?
+
+		TArray<int32> GroupMembership;
+
+		bool bAllEqual = false;
+		FHoudiniEngineUtils::HapiGetGroupMembership(NodeId, PartInfo, GroupType, DataLayerName, GroupMembership, bAllEqual);
+
+		DataLayerName.RemoveFromStart(NamePrefix);
+
+		for (int Index  = 0; Index < GroupMembership.Num(); Index++)
+		{
+			if (GroupMembership[Index])
+			{
+				FHoudiniDataLayer Layer;
+				Layer.Name = DataLayerName;
+				if(CreateFlags.IsValidIndex(Index))
+					Layer.bCreateIfNeeded = CreateFlags[Index] != 0;
+				else
+					Layer.bCreateIfNeeded = bDefaultCreateFlags != 0;
+
+				Results[Index].DataLayers.Add(Layer);
+			}
+		}
+	}
+#endif
+	return Results;
+}
+
 TArray<FHoudiniDataLayer>
-FHoudiniDataLayerUtils::GetDataLayers(HAPI_NodeId NodeId, HAPI_PartId PartId)
+FHoudiniDataLayerUtils::GetDataLayers(HAPI_NodeId NodeId, HAPI_PartId PartId, HAPI_GroupType GroupType, int Index)
 {
 	TArray<FHoudiniDataLayer> Results;
 #if HOUDINI_ENABLE_DATA_LAYERS
 	// Get a list of all groups this part MAY be a member of.
 	TArray<FString> RawGroupNames;
-	bool bResult = FHoudiniEngineUtils::HapiGetGroupNames(
-		NodeId, PartId,
-		HAPI_GROUPTYPE_PRIM,
-		false,
-		RawGroupNames);
+	bool bResult = FHoudiniEngineUtils::HapiGetGroupNames(NodeId, PartId, GroupType, false, RawGroupNames);
 
 	// Check each group to see if we're a member.
 	FString NamePrefix = TEXT(HOUDINI_DATA_LAYER_PREFIX);
-	for (FString DataLayerName : RawGroupNames)
+	for(FString DataLayerName : RawGroupNames)
 	{
 		// Is a group that specifies an unreal data layer?
-		if (!DataLayerName.StartsWith(NamePrefix))
+		if(!DataLayerName.StartsWith(NamePrefix))
 			continue;
 
 		// Is a member of the group?
-		int32 PointGroupMembership = 0;
+		int32 GroupMembership = 0;
 
-		FHoudiniEngineUtils::HapiGetGroupMembership(
-			NodeId, PartId, HAPI_GROUPTYPE_PRIM,
-			DataLayerName, PointGroupMembership);
+		FHoudiniEngineUtils::HapiGetGroupMembership(NodeId, PartId, GroupType, DataLayerName, GroupMembership, Index, 1);
 
-		if (PointGroupMembership == 0)
+		if(GroupMembership == 0)
 			continue;
 
 		FHoudiniDataLayer Layer;
@@ -152,17 +238,25 @@ FHoudiniDataLayerUtils::GetDataLayers(HAPI_NodeId NodeId, HAPI_PartId PartId)
 
 		// Create flag that indicates if we should create missing data layers.
 		int32 CreateFlags = 0;
-		FHoudiniEngineUtils::HapiGetFirstAttributeValueAsInteger(
-				NodeId, PartId, 
-				HAPI_UNREAL_ATTRIB_CREATE_DATA_LAYERS,
-				HAPI_ATTROWNER_PRIM,
-				CreateFlags);
+
+		FHoudiniHapiAccessor Accessor;
+		Accessor.Init(NodeId, PartId, HAPI_UNREAL_ATTRIB_CREATE_DATA_LAYERS);
+		bool bSuccess = Accessor.GetAttributeFirstValue(HAPI_ATTROWNER_INVALID, CreateFlags);
 
 		Layer.bCreateIfNeeded = (CreateFlags == 1);
 
 		Results.Add(Layer);
 	}
 #endif
+	return Results;
+}
+
+TArray<FHoudiniDataLayer>
+FHoudiniDataLayerUtils::GetDataLayers(HAPI_NodeId NodeId, HAPI_PartId PartId)
+{
+	TArray<FHoudiniDataLayer> Results = GetDataLayers(NodeId, PartId, HAPI_GroupType::HAPI_GROUPTYPE_PRIM, 0);
+	if (Results.IsEmpty())
+		Results = GetDataLayers(NodeId, PartId, HAPI_GroupType::HAPI_GROUPTYPE_POINT, 0);
 	return Results;
 }
 

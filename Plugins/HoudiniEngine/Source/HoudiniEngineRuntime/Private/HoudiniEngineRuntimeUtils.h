@@ -58,6 +58,9 @@ struct HOUDINIENGINERUNTIME_API FHoudiniEngineRuntimeUtils
 		// Return platform specific name of libHAPI.
 		static FString GetLibHAPIName();
 
+		// Check InCustomHoudiniLocationPath is a valid Houdini installation.
+		static bool CheckCustomHoudiniLocation(const FString& InCustomHoudiniLocationPath);
+
 		// Returns default SM Generation Properties using the default settings values
 		static FHoudiniStaticMeshGenerationProperties GetDefaultStaticMeshGenerationProperties();
 
@@ -66,6 +69,9 @@ struct HOUDINIENGINERUNTIME_API FHoudiniEngineRuntimeUtils
 
 		// Sets  to the custom dir in the settings
 		static void SetHoudiniHomeEnvironmentVariable();
+
+		// Helper function for returning a class from its name
+		static UClass* GetClassByName(const FString& InName);
 
 		// -----------------------------------------------
 		// Bounding Box utilities
@@ -360,14 +366,8 @@ struct HOUDINIENGINERUNTIME_API FHoudiniEngineRuntimeUtils
 
 
 		// -------------------------------------------------
-		// Experimental Features - Landscape Splines
+		// Landscape Splines
 		// -------------------------------------------------
-
-		// Returns true if landscape spline input is enabled
-		static bool IsLandscapeSplineInputEnabled();
-
-		// Returns true if landscape spline output is enabled
-		static bool IsLandscapeSplineOutputEnabled();
 
 		// Gets the control points and/or segments of the given landscape spline
 		static bool GetLandscapeSplinesControlPointsAndSegments(
@@ -381,15 +381,6 @@ struct HOUDINIENGINERUNTIME_API FHoudiniEngineRuntimeUtils
 		// Gets the segments of a ULandscapeSplinesComponent
 		static bool GetLandscapeSplinesSegments(ULandscapeSplinesComponent* const InSplinesComponent, TArray<TObjectPtr<ULandscapeSplineSegment>>& OutSegments);
 
-
-		// -------------------------------------------------
-		// Experimental Features - Spline Meshes
-		// -------------------------------------------------
-
-		// Returns true if spline mesh input is enabled
-		static bool IsSplineMeshInputEnabled();
-
-	
 		// Helper function for destroying landscapes.
 
 		// -------------------------------------------------

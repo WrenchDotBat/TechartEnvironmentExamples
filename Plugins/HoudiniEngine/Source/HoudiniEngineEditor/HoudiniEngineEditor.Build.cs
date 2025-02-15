@@ -33,8 +33,7 @@ public class HoudiniEngineEditor : ModuleRules
     public HoudiniEngineEditor( ReadOnlyTargetRules Target ) : base( Target )
     {
         bPrecompile = true;
-        MinSourceFilesForUnityBuildOverride = 1;
-        PCHUsage = PCHUsageMode.UseSharedPCHs;
+        PCHUsage = PCHUsageMode.NoSharedPCHs;
         PrivatePCHHeaderFile = "Private/HoudiniEngineEditorPrivatePCH.h";
 
         // Check if we are compiling on unsupported platforms.
@@ -46,7 +45,7 @@ public class HoudiniEngineEditor : ModuleRules
             System.Console.WriteLine( Err );
             throw new BuildException( Err );
         }
-
+    
         PublicIncludePaths.AddRange(
             new string[] {
                 Path.Combine(ModuleDirectory, "Public")
@@ -74,6 +73,7 @@ public class HoudiniEngineEditor : ModuleRules
                 "CoreUObject",
                 "HoudiniEngine",
                 "HoudiniEngineRuntime",
+                "ImageCore",
                 "Slate",
                 "SlateCore",
                 "Landscape",
@@ -116,10 +116,11 @@ public class HoudiniEngineEditor : ModuleRules
                 "GameProjectGeneration",
                 "ToolWidgets",
                 "EditorFramework",
-				"DataLayerEditor"
+                "DataLayerEditor",
+                "TraceAnalysis"
             }
         );
-
+        
         if (Target.Version.MajorVersion == 5 && (Target.Version.MinorVersion == 0 || Target.Version.MinorVersion == 1))
 		{
 			PrivateDependencyModuleNames.AddRange(

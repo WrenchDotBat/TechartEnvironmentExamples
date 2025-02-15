@@ -32,9 +32,9 @@
 
 /*
 
-    Houdini Version: 19.5.805
-    Houdini Engine Version: 5.0.8
-    Unreal Version: 5.3.0
+    Houdini Version: 20.5.472
+    Houdini Engine Version: 7.0.7
+    Unreal Version: 5.0.0
 
 */
 
@@ -78,9 +78,9 @@ public class HoudiniEngine : ModuleRules
 
     private string GetHFSPath()
     {
-        string HoudiniVersion = "19.5.805";
+        string HoudiniVersion = "20.5.472";
         bool bIsRelease = true;
-        string HFSPath = "C:/cygwin/home/prisms/builder-new/Nightly19.5CMake/dev/hfs";
+        string HFSPath = "";
         string RegistryPath = "HKEY_LOCAL_MACHINE\\SOFTWARE\\Side Effects Software";
         string Registry32Path = "HKEY_LOCAL_MACHINE\\SOFTWARE\\WOW6432Node\\Side Effects Software";
         string log;
@@ -260,8 +260,7 @@ public class HoudiniEngine : ModuleRules
     public HoudiniEngine(ReadOnlyTargetRules Target) : base(Target)
     {
         bPrecompile = true;
-        MinSourceFilesForUnityBuildOverride = 1;
-        PCHUsage = PCHUsageMode.UseSharedPCHs;
+        PCHUsage = PCHUsageMode.NoSharedPCHs;
         PrivatePCHHeaderFile = "Private/HoudiniEnginePrivatePCH.h";
 
         // Check if we are compiling on unsupported platforms.
@@ -373,7 +372,9 @@ public class HoudiniEngine : ModuleRules
                     "EditorFramework",
                     "SubobjectEditor",
                     "MeshMergeUtilities",
-                    "MeshUtilitiesCommon"
+                    "MeshUtilitiesCommon",
+                    "Json",
+                    "SkeletalMeshDescription"
                 }
             );
         }

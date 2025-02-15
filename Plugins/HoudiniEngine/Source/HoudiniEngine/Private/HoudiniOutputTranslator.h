@@ -68,10 +68,11 @@ struct HOUDINIENGINE_API FHoudiniOutputTranslator
 		UObject* InOuterObject,
 		const TArray<HAPI_NodeId>& OutputNodes,
 		const TMap<HAPI_NodeId, int32>& OutputNodeCookCounts,
-		TArray<UHoudiniOutput*>& InOldOutputs,
-		TArray<UHoudiniOutput*>& OutNewOutputs,
-		const bool& InOutputTemplatedGeos,
-		const bool& InUseOutputNodes);
+		TArray<TObjectPtr<UHoudiniOutput>>& InOldOutputs,
+		TArray<TObjectPtr<UHoudiniOutput>>& OutNewOutputs,
+		bool InOutputTemplatedGeos,
+		bool InUseOutputNodes,
+		bool bGatherEditableCurves);
 
 	static bool UpdateChangedOutputs(
 		UHoudiniAssetComponent* HAC);
@@ -103,4 +104,7 @@ struct HOUDINIENGINE_API FHoudiniOutputTranslator
 	static void ClearOutput(UHoudiniOutput* Output);
 
 	static bool GetCustomPartNameFromAttribute(const HAPI_NodeId & NodeId, const HAPI_PartId & PartId, FString & OutCustomPartName);
+
+	static void RemovePreviousOutputs(UHoudiniAssetComponent* HAC);
+
 };

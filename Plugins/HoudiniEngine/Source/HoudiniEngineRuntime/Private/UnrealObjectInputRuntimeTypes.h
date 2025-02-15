@@ -98,11 +98,11 @@ public:
 	
 	/** Helper to make FUnrealObjectInputOptions for Landscape actors. */
 	static FUnrealObjectInputOptions MakeOptionsForLandscapeActor(
-		const FHoudiniInputObjectSettings& InInputSettings, const TSet<ULandscapeComponent*>* InSelectedComponents=nullptr);
+		const FHoudiniInputObjectSettings& InInputSettings, const TSet<TObjectPtr<ULandscapeComponent>>* InSelectedComponents=nullptr);
 	
 	/** Helper to make FUnrealObjectInputOptions for Landscape data. */
 	static FUnrealObjectInputOptions MakeOptionsForLandscapeData(
-		const FHoudiniInputObjectSettings& InInputSettings, const TSet<ULandscapeComponent*>* InSelectedComponents=nullptr);
+		const FHoudiniInputObjectSettings& InInputSettings, const TSet<TObjectPtr<ULandscapeComponent>>* InSelectedComponents=nullptr);
 
 	/** Helper to make FUnrealObjectInputOptions for LandscapeSplineActors. */
 	static FUnrealObjectInputOptions MakeOptionsForLandscapeSplineActor(const FHoudiniInputObjectSettings& InInputSettings);
@@ -110,11 +110,26 @@ public:
 	/** Helper to make FUnrealObjectInputOptions for generic Actors. */
 	static FUnrealObjectInputOptions MakeOptionsForGenericActor(const FHoudiniInputObjectSettings& InInputSettings);
 
+	void SetBoolOptions(const TMap<FName, bool>& InBoolOptions) { BoolOptions = InBoolOptions; ComputeBoolOptionsHash(); }
+	void AddBoolOption(const FName InBoolOption, const bool bInValue) { BoolOptions.Add(InBoolOption, bInValue); ComputeBoolOptionsHash(); }
+	bool RemoveBoolOption(const FName InBoolOptionToRemove)
+	{
+		if (BoolOptions.Remove(InBoolOptionToRemove) <= 0)
+			return false;
+
+		ComputeBoolOptionsHash();
+		return true;
+	}
+	
+	const TMap<FName, bool>& GetBoolOptions() const { return BoolOptions; }
+
+	uint32 GetBoolOptionsHash() const { return BoolOptionsHash; }
+
 	void SetSelectedComponents(const TSet<TWeakObjectPtr<UActorComponent>>& InSelectedComponents);
 	void SetSelectedComponents(TSet<TWeakObjectPtr<UActorComponent>>&& InSelectedComponents);
 
 	template <class T>
-	void SetSelectedComponents(const TSet<T*>& InSelectedComponents);
+	void SetSelectedComponents(const TSet<TObjectPtr<T>>& InSelectedComponents);
 
 	const TSet<TWeakObjectPtr<UActorComponent>>& GetSelectedComponents() const { return SelectedComponents; }
 
@@ -196,10 +211,19 @@ public:
 	bool bExportSelectedComponentsOnly;
 
 protected:
+	/** Compute BoolOptionsHash from BoolOptions. */ 
+	void ComputeBoolOptionsHash();
+
 	/** Compute SelectedComponentsHash from SelectedComponents. */ 
 	void ComputeSelectedComponentsHash();
 	
 private:
+	/** Boolean options for the input object. */
+	TMap<FName, bool> BoolOptions;
+
+	/** The computed hash of BoolOptions. */
+	uint32 BoolOptionsHash;
+
 	/** The set of selected components. */
 	TSet<TWeakObjectPtr<UActorComponent>> SelectedComponents;
 
@@ -976,7 +1000,7 @@ private:
 
 
 template <class T>
-void FUnrealObjectInputOptions::SetSelectedComponents(const TSet<T*>& InSelectedComponents)
+void FUnrealObjectInputOptions::SetSelectedComponents(const TSet<TObjectPtr<T>>& InSelectedComponents)
 {
 	static_assert(std::is_base_of<UActorComponent, T>::value, "T must derive from UActorComponent");
 

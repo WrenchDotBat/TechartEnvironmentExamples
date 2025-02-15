@@ -39,5 +39,5 @@ def run():
         api.create_session()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     run()

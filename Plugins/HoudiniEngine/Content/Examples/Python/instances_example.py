@@ -34,7 +34,7 @@ _g_wrapper = None
 
 
 def get_test_hda_path():
-    return "/HoudiniEngine/Examples/hda/pig_head_subdivider_v01.pig_head_subdivider_v01"
+    return '/HoudiniEngine/Examples/hda/pig_head_subdivider_v01.pig_head_subdivider_v01'
 
 
 def get_test_hda():
@@ -42,13 +42,13 @@ def get_test_hda():
 
 
 def on_post_instantiation(in_wrapper):
-    print("on_post_instantiation")
+    print('on_post_instantiation')
     # in_wrapper.on_post_instantiation_delegate.remove_callable(on_post_instantiation)
 
     # Set some parameters to create instances and enable a material
-    in_wrapper.set_bool_parameter_value("add_instances", True)
-    in_wrapper.set_int_parameter_value("num_instances", 8)
-    in_wrapper.set_bool_parameter_value("addshader", True)
+    in_wrapper.set_bool_parameter_value('add_instances', True)
+    in_wrapper.set_int_parameter_value('num_instances', 8)
+    in_wrapper.set_bool_parameter_value('addshader', True)
 
 
 def run():
@@ -63,5 +63,5 @@ def run():
     _g_wrapper.on_post_instantiation_delegate.add_callable(on_post_instantiation)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     run()

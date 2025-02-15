@@ -44,7 +44,7 @@ class HOUDINIENGINERUNTIME_API AHoudiniAssetActor : public AActor
 
 	// Pointer to the root HoudiniAssetComponent
 	UPROPERTY(Category = HoudiniAssetActor, VisibleAnywhere, BlueprintReadOnly, meta = (ExposeFunctionCategories = "Mesh,Rendering,Physics,Components|HoudiniEngine")/*, AllowPrivateAccess = "true"*/)
-	TObjectPtr<UHoudiniAssetComponent> HoudiniAssetComponent;
+	TObjectPtr<UHoudiniAssetComponent>  HoudiniAssetComponent;
 
 public:
 
@@ -52,19 +52,16 @@ public:
 	UHoudiniAssetComponent* GetHoudiniAssetComponent() const;
 
 	bool IsUsedForPreview() const;
-
+	
 	// Gets the Houdini PDG asset link associated with this actor, if it has one.
 	UHoudiniPDGAssetLink* GetPDGAssetLink() const;
 
-	virtual bool NeedsLoadForServer() const override
-	{
-		return false;
-	}
+	// Set the Houdini Actor to be a NodeSyncActor
+	void SetNodeSyncActor(bool bIsNodeSync);
 
-	virtual bool NeedsLoadForClient() const override
-	{
-		return false;
-	}
+	// Indicates if this Actor is a NodeSyncActor
+	bool IsNodeSyncActor() const;
+
 
 #if WITH_EDITOR
 

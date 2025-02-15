@@ -72,7 +72,7 @@ void FHoudiniStringResolver::SetTokensFromStringMap(const TMap<FString, FString>
 FString FHoudiniStringResolver::ResolveString(
 	const FString& InString) const
 {
-	const FString Result = FString::Format(*InString, CachedTokens);
+	FString Result = FString::Format(*InString, CachedTokens);
 	return Result;
 }
 
@@ -84,17 +84,28 @@ FString FHoudiniStringResolver::ResolveString(
 FString FHoudiniAttributeResolver::ResolveAttribute(
 	const FString& InAttrName,
 	const FString& InDefaultValue,
-	const bool bInUseDefaultIfAttrValueEmpty) const
+	const bool bInUseDefaultIfAttrValueEmpty,
+	bool* const bOutUsedDefaultValue) const
 {
 	if (!CachedAttributes.Contains(InAttrName))
 	{
+		if (bOutUsedDefaultValue)
+			*bOutUsedDefaultValue = true;
 		return ResolveString(InDefaultValue);
 	}
 	const FString AttrStr = CachedAttributes.FindChecked(InAttrName);
 	const FString AttrValue = ResolveString(AttrStr);
 	
 	if (bInUseDefaultIfAttrValueEmpty && AttrValue.IsEmpty())
+	{
+		if (bOutUsedDefaultValue)
+			*bOutUsedDefaultValue = true;
 		return ResolveString(InDefaultValue);
+	}
+
+	if (bOutUsedDefaultValue)
+		*bOutUsedDefaultValue = false;
+
 	return AttrValue;
 }
 
@@ -155,7 +166,7 @@ FString FHoudiniAttributeResolver::ResolveFullLevelPath() const
 	return FHoudiniEngineRuntimeUtils::JoinPaths(OutputFolder, LevelPathAttr);
 }
 
-FString FHoudiniAttributeResolver::ResolveOutputName(const bool bInForBake) const
+FString FHoudiniAttributeResolver::ResolveOutputName(const bool bInForBake, bool* const bOutUsedDefaultValue) const
 {
 	FString OutputAttribName;
 
@@ -174,7 +185,8 @@ FString FHoudiniAttributeResolver::ResolveOutputName(const bool bInForBake) cons
 
 	// When baking add the component guid to the default value for object_name
 	const FString DefaultValue = bInForBake ? TEXT("{object_name}_{guid8}") : TEXT("{object_name}");
-	return ResolveAttribute(OutputAttribName, DefaultValue);
+	static constexpr bool bUseDefaultIfAttrValueEmpty = false;
+	return ResolveAttribute(OutputAttribName, DefaultValue, bUseDefaultIfAttrValueEmpty, bOutUsedDefaultValue);
 }
 
 FString FHoudiniAttributeResolver::ResolveBakeFolder() const
@@ -182,15 +194,15 @@ FString FHoudiniAttributeResolver::ResolveBakeFolder() const
 	const FString DefaultBakeFolder = FHoudiniEngineRuntime::Get().GetDefaultBakeFolder();
 	
 	constexpr bool bUseDefaultIfAttrValueEmpty = true;
-	FString BakeFolder = ResolveAttribute(
-		HAPI_UNREAL_ATTRIB_BAKE_FOLDER, TEXT("{bake}"), bUseDefaultIfAttrValueEmpty);
+	FString BakeFolder = ResolveAttribute(HAPI_UNREAL_ATTRIB_BAKE_FOLDER, TEXT("{bake}"), bUseDefaultIfAttrValueEmpty);
 	if (BakeFolder.IsEmpty())
-		return DefaultBakeFolder;
+		BakeFolder = DefaultBakeFolder;
 
-	//if (BakeFolder.StartsWith("Game/"))
-	//{
-	//	BakeFolder = "/" + BakeFolder;
-	//}
+	if (!BakeFolder.StartsWith(TEXT("/")))
+	{
+		HOUDINI_LOG_WARNING(TEXT("Bake folder %s does not start with '/'. Adding '/' to avoid an Unreal crash."), *BakeFolder);
+		BakeFolder = TEXT("/") + BakeFolder;
+	}
 
 	//FString AbsoluteOverridePath;
 	//if (BakeFolder.StartsWith("/Game/"))

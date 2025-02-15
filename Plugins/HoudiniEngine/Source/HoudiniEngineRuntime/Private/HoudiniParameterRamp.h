@@ -78,6 +78,17 @@ public:
 	FORCEINLINE
 	bool IsColorRampEvent() { return !bIsFloatRamp; };
 
+	FORCEINLINE
+	void SetPosition(float Position) { InsertPosition = Position; }
+
+	FORCEINLINE
+	void SetValue(float Value) { InsertFloat = Value; }
+
+	FORCEINLINE
+	void SetValue(FLinearColor Value) { InsertColor = Value; }
+
+	FORCEINLINE
+	void SetInterpolation(EHoudiniRampInterpolationType Interpolation) { InsertInterpolation = Interpolation; }
 
 private:
 	UPROPERTY()
@@ -125,13 +136,13 @@ public:
 	int32 InstanceIndex = -1;
 
 	UPROPERTY()
-	UHoudiniParameterFloat* PositionParentParm = nullptr;
+	TObjectPtr<UHoudiniParameterFloat> PositionParentParm = nullptr;
 
 	UPROPERTY()
-	UHoudiniParameterFloat* ValueParentParm = nullptr;
+	TObjectPtr<UHoudiniParameterFloat> ValueParentParm = nullptr;
 
 	UPROPERTY()
-	UHoudiniParameterChoice* InterpolationParentParm = nullptr;
+	TObjectPtr<UHoudiniParameterChoice> InterpolationParentParm = nullptr;
 
 	FORCEINLINE
 	float GetPosition() const { return Position; };
@@ -178,13 +189,13 @@ public:
 	int32 InstanceIndex = -1;
 
 	UPROPERTY()
-	UHoudiniParameterFloat * PositionParentParm = nullptr;
+	TObjectPtr<UHoudiniParameterFloat>  PositionParentParm = nullptr;
 
 	UPROPERTY()
-	UHoudiniParameterColor* ValueParentParm = nullptr;
+	TObjectPtr<UHoudiniParameterColor> ValueParentParm = nullptr;
 
 	UPROPERTY()
-	UHoudiniParameterChoice* InterpolationParentParm = nullptr;
+	TObjectPtr<UHoudiniParameterChoice> InterpolationParentParm = nullptr;
 
 	FORCEINLINE
 	float GetPosition() const { return Position; };
@@ -207,7 +218,29 @@ public:
 	void RemapParameters(const TMap<UHoudiniParameter*, UHoudiniParameter*>& ParameterMapping);
 };
 
+/**
+ * A note on Houdini Ramp Parameter processes
+ *
+ * The Ramp Parameters changes are applied through HAPI by way of Modification Events.
+ * The FHoudiniParameterTranslator::UploadRampParameter method will process all the pending modification events on a
+ * ramp parameter and execute the desired HAPI calls to send these modifications through to Houdini. When the HDA
+ * has finished cooking, the values from the ramp parameters on the Houdini side will be copied back onto the HDA in
+ * Unreal (the `points` member of the respective ramp parameter will be overwritten).
+ *
+ * It is for this reason that we cannot simply store our desired state in the `Points` member; anything stored here will
+ * get clobbered after the HDA has been cooked. So we record any modifications as events instead, and apply those
+ * modification events on the next cook.
+ *
+ * We can store our desired state in the CachedPoints member, as is the case when auto-update is disabled for a
+ * Ramp parameter or HoudiniEngine cooking is disabled. Once the HDA is ready to cook, the data in CachedPoints is
+ * "synced" (SyncCachedPoints). This will generate Modification Events based on the differences in data between
+ * `Points` and `CachedPoints`. Once the modification events have been generated, the HDA can be cooked as usual.
+ */
 
+
+/**
+ * Houdini Ramp Parameter (float)
+ */
 UCLASS()
 class HOUDINIENGINERUNTIME_API UHoudiniParameterRampFloat : public UHoudiniParameterMultiParm
 {
@@ -238,6 +271,12 @@ public:
 
 	void CreateDeleteEvent(const int32 &InDeleteIndex);
 
+	// Resize the number of cached points contained in this parameter 
+	void SetNumCachedPoints(const int32 NumPoints);
+
+	// Set the cached point at the current index. If no point object exist at the current index, create it. 
+	bool SetCachedPointAtIndex(const int32 InIndex, const float InPosition, const float InValue, const EHoudiniRampInterpolationType InInterpolation);
+
 	/**
 	 * Update/populates the Points array from InParameters.
 	 * @param InParameters An array of parameters containing this ramp multiparm's instances (the parameters for each
@@ -248,10 +287,10 @@ public:
 	bool UpdatePointsArray(const TArray<UHoudiniParameter*>& InParameters, const int32 InStartParamIndex);
 	
 	UPROPERTY()
-	TArray<UHoudiniParameterRampFloatPoint*> Points;
+	TArray<TObjectPtr<UHoudiniParameterRampFloatPoint>> Points;
 
 	UPROPERTY()
-	TArray<UHoudiniParameterRampFloatPoint*> CachedPoints;
+	TArray<TObjectPtr<UHoudiniParameterRampFloatPoint>> CachedPoints;
 
 	UPROPERTY()
 	TArray<float> DefaultPositions;
@@ -265,11 +304,12 @@ public:
 	UPROPERTY()
 	int32 NumDefaultPoints;
 
+	// If this is true, the cached points will be synced prior to cooking.
 	UPROPERTY()
 	bool bCaching;
 
 	UPROPERTY()
-	TArray<UHoudiniParameterRampModificationEvent*> ModificationEvents;
+	TArray<TObjectPtr<UHoudiniParameterRampModificationEvent>> ModificationEvents;
 
 	bool IsDefault() const override;
 
@@ -278,6 +318,9 @@ public:
 };
 
 
+/**
+ * Houdini Ramp Parameter (FLinearColor)
+ */
 UCLASS()
 class HOUDINIENGINERUNTIME_API UHoudiniParameterRampColor : public UHoudiniParameterMultiParm
 {
@@ -286,11 +329,19 @@ class HOUDINIENGINERUNTIME_API UHoudiniParameterRampColor : public UHoudiniParam
 	friend class FHoudiniEditorEquivalenceUtils;
 
 public:
+	
+	virtual void OnPreCook() override;
 
 	// Create instance of this class.
 	static UHoudiniParameterRampColor * Create(
 		UObject* Outer,
 		const FString& ParamName);
+
+	FORCEINLINE
+	bool IsCaching() const { return bCaching; };
+
+	FORCEINLINE
+	void SetCaching(const bool bInCaching) { bCaching = bInCaching; };
 
 	virtual void CopyStateFrom(UHoudiniParameter* InParameter, bool bCopyAllProperties, EObjectFlags InClearFlags=RF_NoFlags, EObjectFlags InSetFlags=RF_NoFlags) override;
 
@@ -305,14 +356,26 @@ public:
 	 */
 	bool UpdatePointsArray(const TArray<UHoudiniParameter*>& InParameters, const int32 InStartParamIndex);
 
+	void SyncCachedPoints();
+
+	void CreateInsertEvent(const float& InPosition, const FLinearColor& InValue, const EHoudiniRampInterpolationType &InInterp);
+
+	void CreateDeleteEvent(const int32 &InDeleteIndex);
+
+	// Resize the number of cached points contained in this parameter 
+	void SetNumCachedPoints(const int32 NumPoints);
+
+	// Set the cached point at the current index. If no point object exist at the current index, create it. 
+	bool SetCachedPointAtIndex(const int32 InIndex, const float InPosition, const FLinearColor& InValue, const EHoudiniRampInterpolationType InInterpolation);
+
 	UPROPERTY(Instanced)
-	TArray<UHoudiniParameterRampColorPoint*> Points;
+	TArray<TObjectPtr<UHoudiniParameterRampColorPoint>> Points;
 
 	UPROPERTY()
 	bool bCaching;
 
 	UPROPERTY(Instanced)
-	TArray<UHoudiniParameterRampColorPoint*> CachedPoints;
+	TArray<TObjectPtr<UHoudiniParameterRampColorPoint>> CachedPoints;
 
 	UPROPERTY()
 	TArray<float> DefaultPositions;
@@ -327,7 +390,7 @@ public:
 	int32 NumDefaultPoints;
 
 	UPROPERTY()
-	TArray<UHoudiniParameterRampModificationEvent*> ModificationEvents;
+	TArray<TObjectPtr<UHoudiniParameterRampModificationEvent>> ModificationEvents;
 
 	bool IsDefault() const override;
 

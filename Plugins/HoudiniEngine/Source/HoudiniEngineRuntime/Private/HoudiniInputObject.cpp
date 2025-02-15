@@ -40,6 +40,7 @@
 
 #include "Engine/StaticMesh.h"
 #include "Engine/SkeletalMesh.h"
+#include "Animation/AnimSequence.h"
 #include "Engine/DataTable.h"
 #include "Components/StaticMeshComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
@@ -109,6 +110,12 @@ UHoudiniInputStaticMesh::UHoudiniInputStaticMesh(const FObjectInitializer& Objec
 
 //
 UHoudiniInputSkeletalMesh::UHoudiniInputSkeletalMesh(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+
+}
+
+UHoudiniInputAnimation::UHoudiniInputAnimation(const FObjectInitializer& ObjectInitializer)
 	: Super(ObjectInitializer)
 {
 
@@ -268,14 +275,11 @@ UHoudiniInputLandscapeSplineActor::ShouldTrackComponent(UActorComponent const* I
 	// Use InSettings if provided, otherwise use the settings cached at the last update
 	const FHoudiniInputObjectSettings& Settings = InSettings ? *InSettings : CachedInputSettings;
 	
-	if (FHoudiniEngineRuntimeUtils::IsLandscapeSplineInputEnabled() && InComponent->IsA(ULandscapeSplinesComponent::StaticClass()))
+	if (InComponent->IsA(ULandscapeSplinesComponent::StaticClass()))
 		return true;
 		
-	if (Settings.bLandscapeSplinesExportSplineMeshComponents && FHoudiniEngineRuntimeUtils::IsSplineMeshInputEnabled()
-			&& InComponent->IsA(USplineMeshComponent::StaticClass()))
-	{
+	if (Settings.bLandscapeSplinesExportSplineMeshComponents && InComponent->IsA(USplineMeshComponent::StaticClass()))
 		return true;
-	}
 	
 	return false;
 }
@@ -484,7 +488,7 @@ void
 UHoudiniInputObject::SetInputNodeId(const int32 InInputNodeId)
 {
 	// Only set the node id if the ref counted system is not used.
-	if (bInputNodeHandleOverridesNodeIds && FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled())
+	if (bInputNodeHandleOverridesNodeIds)
 		return;
 	InputNodeId = InInputNodeId;
 }
@@ -495,7 +499,7 @@ UHoudiniInputObject::GetInputNodeId() const
 	// If the ref counted system is enabled then we return the node id via the handle, otherwise return the id stored
 	// on this object
 
-	if (!bInputNodeHandleOverridesNodeIds || !FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled())
+	if (!bInputNodeHandleOverridesNodeIds)
 		return InputNodeId;
 
 	if (!InputNodeHandle.IsValid())
@@ -518,7 +522,7 @@ void
 UHoudiniInputObject::SetInputObjectNodeId(const int32 InInputObjectNodeId)
 {
 	// Only set the node id if the ref counted system is not used.
-	if (bInputNodeHandleOverridesNodeIds && FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled())
+	if (bInputNodeHandleOverridesNodeIds)
 		return;
 	InputObjectNodeId = InInputObjectNodeId;
 }
@@ -529,7 +533,7 @@ UHoudiniInputObject::GetInputObjectNodeId() const
 	// If the ref counted system is enabled then we return the node id via the handle, otherwise return the id stored
 	// on this object
 
-	if (!bInputNodeHandleOverridesNodeIds || !FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled())
+	if (!bInputNodeHandleOverridesNodeIds)
 		return InputObjectNodeId;
 
 	if (!InputNodeHandle.IsValid())
@@ -573,6 +577,12 @@ USkeletalMesh*
 UHoudiniInputSkeletalMesh::GetSkeletalMesh()
 {
 	return Cast<USkeletalMesh>(InputObject.LoadSynchronous());
+}
+
+UAnimSequence*
+UHoudiniInputAnimation::GetAnimation()
+{
+	return Cast<UAnimSequence>(InputObject.LoadSynchronous());
 }
 
 USkeletalMeshComponent*
@@ -851,6 +861,9 @@ UHoudiniInputObject::CreateTypedInputObject(UObject * InObject, UObject* InOuter
 
 		case EHoudiniInputObjectType::SkeletalMesh:
 			HoudiniInputObject = UHoudiniInputSkeletalMesh::Create(InObject, InOuter, InName, InInputSettings);
+			break;
+		case EHoudiniInputObjectType::Animation:
+			HoudiniInputObject = UHoudiniInputAnimation::Create(InObject, InOuter, InName, InInputSettings);
 			break;
 		case EHoudiniInputObjectType::SceneComponent:
 			// Do not create input objects for unknown scene component!
@@ -1226,6 +1239,24 @@ UHoudiniInputSkeletalMesh::Create(UObject * InObject, UObject* InOuter, const FS
 }
 
 UHoudiniInputObject*
+UHoudiniInputAnimation::Create(UObject* InObject, UObject* InOuter, const FString& InName, const FHoudiniInputObjectSettings& InInputSettings)
+{
+	FString InputObjectNameStr = "HoudiniInputObject_Animation_" + InName;
+	FName InputObjectName = MakeUniqueObjectName(InOuter, UHoudiniInputAnimation::StaticClass(), *InputObjectNameStr);
+
+	// We need to create a new object
+	UHoudiniInputAnimation* HoudiniInputObject = NewObject<UHoudiniInputAnimation>(
+		InOuter, UHoudiniInputAnimation::StaticClass(), InputObjectName, RF_Public | RF_Transactional);
+
+	HoudiniInputObject->Type = EHoudiniInputObjectType::Animation;
+	HoudiniInputObject->Update(InObject, InInputSettings);
+	HoudiniInputObject->bHasChanged = true;
+
+	return HoudiniInputObject;
+}
+
+
+UHoudiniInputObject*
 UHoudiniInputSkeletalMeshComponent::Create(UObject* InObject, UObject* InOuter, const FString& InName, const FHoudiniInputObjectSettings& InInputSettings, UHoudiniInputActor* InParentInputActor)
 {
 	FString InputObjectNameStr = "HoudiniInputObject_SKC_" + InName;
@@ -1343,9 +1374,8 @@ UHoudiniInputObject::Matches(const UHoudiniInputObject& Other) const
 		&& InputNodeId == Other.InputNodeId
 		&& InputObjectNodeId == Other.InputObjectNodeId
 		);
-	const bool bUseRefCountedInputSystem = FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled();
-	if (bUseRefCountedInputSystem)
-		Matches &= InputNodeHandle == Other.InputNodeHandle;
+
+	Matches &= InputNodeHandle == Other.InputNodeHandle;
 
 	return Matches;
 }
@@ -1370,8 +1400,7 @@ UHoudiniInputObject::InvalidateData()
 
 	// If we are using the new input system, then don't delete the nodes if we have a valid handle, and the HAPI
 	// nodes associated with the handle matches InputNodeId / InputObjectNodeId
-	const bool bIsRefCountedInputSystemEnabled = FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled();
-	if (bIsRefCountedInputSystemEnabled && InputNodeHandle.IsValid())
+	if (InputNodeHandle.IsValid())
 	{
 		IUnrealObjectInputManager const* const Manager = FUnrealObjectInputManager::Get();
 		if (Manager)
@@ -1568,6 +1597,17 @@ UHoudiniInputSkeletalMesh::Update(UObject * InObject, const FHoudiniInputObjectS
 }
 
 void
+UHoudiniInputAnimation::Update(UObject* InObject, const FHoudiniInputObjectSettings& InSettings)
+{
+	// Nothing to do
+	Super::Update(InObject, InSettings);
+
+	UAnimSequence* Animation = Cast<UAnimSequence>(InObject);
+	ensure(Animation);
+}
+
+
+void
 UHoudiniInputSkeletalMeshComponent::Update(UObject* InObject, const FHoudiniInputObjectSettings& InSettings)
 {
 	// Nothing to do
@@ -1603,9 +1643,7 @@ void
 UHoudiniInputLandscapeSplineActor::Update(UObject* InObject, const FHoudiniInputObjectSettings& InSettings)
 {
 	// Get the current value for if exporting spline meshes is enabled
-	if (!InSettings.bLandscapeSplinesExportSplineMeshComponents || !InSettings.bMergeSplineMeshComponents
-			|| !FHoudiniEngineRuntimeUtils::IsSplineMeshInputEnabled() 
-			|| !FHoudiniEngineRuntimeUtils::IsLandscapeSplineInputEnabled())
+	if (!InSettings.bLandscapeSplinesExportSplineMeshComponents || !InSettings.bMergeSplineMeshComponents)
 	{
 		// Invalidate the merged splines nodes
 		InvalidateSplinesMeshData();
@@ -1638,9 +1676,18 @@ UHoudiniInputLandscapeSplinesComponent::Update(UObject * InObject, const FHoudin
 	{
 		for (int32 Idx = 0; Idx < NumControlPoints; ++Idx)
 		{
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
+			TObjectPtr<ULandscapeSplineControlPoint>& ControlPoint = ControlPoints[Idx];
+#else
 			ULandscapeSplineControlPoint const* const ControlPoint = ControlPoints[Idx];
+#endif
 			FHoudiniLandscapeSplineControlPointData& CachedControlPoint = CachedControlPoints[Idx];
+
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
+			if (!ControlPoint)
+#else
 			if (!IsValid(ControlPoint))
+#endif
 			{
 				// Reset entry to default
 				CachedControlPoint = {};
@@ -1771,9 +1818,7 @@ UHoudiniInputSceneComponent::HasComponentChanged(const FHoudiniInputObjectSettin
 FTransform
 UHoudiniInputSceneComponent::GetHoudiniObjectTransform() const
 {
-	if (FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled())
-		return GetTransformRelativeToOwner();
-	return GetTransform();
+	return GetTransformRelativeToOwner();
 }
 
 bool
@@ -2171,7 +2216,11 @@ UHoudiniInputActor::Update(UObject * InObject, const FHoudiniInputObjectSettings
 					}
 
 					const bool bAllowShrink = false;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
+					ActorComponents.RemoveAtSwap(IndexToRemove, 1, bAllowShrink ? EAllowShrinking::Yes : EAllowShrinking::No);
+#else
 					ActorComponents.RemoveAtSwap(IndexToRemove, 1, bAllowShrink);
+#endif
 
 					LastUpdateNumComponentsRemoved++;
 				}
@@ -2266,7 +2315,6 @@ bool
 UHoudiniInputActor::HasContentChanged(const FHoudiniInputObjectSettings& InSettings) const
 {
 	// In the new input system, treat the input actor as changed if it has any component changes
-	if (FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled())
 	{
 		if (GetLastUpdateNumComponentsAdded() > 0 || GetLastUpdateNumComponentsRemoved() > 0)
 			return true;
@@ -2335,16 +2383,12 @@ UHoudiniInputActor::GetChangedObjectsAndValidNodes(TArray<UHoudiniInputObject*>&
 	if (Super::GetChangedObjectsAndValidNodes(OutChangedObjects, OutNodeIdsOfUnchangedValidObjects))
 		return true;
 
-	const bool bIsRefCountedInputSystemEnabled = FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled();
-	
 	// If the actor is merging spline mesh components then it should have a valid SplinesMeshObjectNodeId 
 	if (bUsedMergeSplinesMeshAtLastTranslate)
 	{
 		if (SplinesMeshObjectNodeId >= 0)
 		{
-			// When using the new system we only ever want to add the node of the actor here
-			if (!bIsRefCountedInputSystemEnabled)
-				OutNodeIdsOfUnchangedValidObjects.Add(SplinesMeshObjectNodeId);
+			// Old input system code removed.
 		}
 		else
 		{
@@ -2354,24 +2398,6 @@ UHoudiniInputActor::GetChangedObjectsAndValidNodes(TArray<UHoudiniInputObject*>&
 	}
 	
 	bool bAnyChanges = false;
-	// In the new input system we treat the blueprint/actor as changed (in HasContentChanged()) if there are any component changes
-	if (!bIsRefCountedInputSystemEnabled)
-	{
-		// Check each of its child objects (components)
-		for (auto* const CurrentComp : GetActorComponents())
-		{
-			if (!IsValid(CurrentComp))
-				continue;
-
-			// If we are using merged spline mesh components, then spline mesh component changes, or disabling merging are all
-			// treated as actor changes
-			if (bUsedMergeSplinesMeshAtLastTranslate && CurrentComp->IsA<UHoudiniInputSplineMeshComponent>())
-				continue;
-
-			if (CurrentComp->GetChangedObjectsAndValidNodes(OutChangedObjects, OutNodeIdsOfUnchangedValidObjects))
-				bAnyChanges = true;
-		}
-	}
 
 	return bAnyChanges;
 }
@@ -2393,8 +2419,7 @@ UHoudiniInputActor::InvalidateSplinesMeshData()
 	{
 		// If we are using the new input system, then don't delete the nodes if we have a valid handle, and the HAPI
 		// nodes associated with the handle matches SplinesMeshNodeId / SplinesMeshObjectNodeId
-		const bool bIsRefCountedInputSystemEnabled = FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled();
-		if (bIsRefCountedInputSystemEnabled && SplinesMeshInputNodeHandle.IsValid())
+		if (SplinesMeshInputNodeHandle.IsValid())
 		{
 			IUnrealObjectInputManager const* const Manager = FUnrealObjectInputManager::Get();
 			if (Manager)
@@ -2430,8 +2455,6 @@ UHoudiniInputActor::InvalidateSplinesMeshData()
 bool
 UHoudiniInputActor::UsesInputObjectNode() const
 {
-	if (!FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled())
-		return false;
 	return true;
 }
 
@@ -2455,12 +2478,6 @@ UHoudiniInputActor::InvalidateData()
 bool
 UHoudiniInputActor::ShouldTrackComponent(UActorComponent const* InComponent, const FHoudiniInputObjectSettings* InSettings) const
 {
-	if (!FHoudiniEngineRuntimeUtils::IsLandscapeSplineInputEnabled() && InComponent->IsA<ULandscapeSplinesComponent>())
-		return false;
-	
-	if (!FHoudiniEngineRuntimeUtils::IsSplineMeshInputEnabled() && InComponent->IsA<USplineMeshComponent>())
-		return false;
-	
 	return true;
 }
 
@@ -2668,9 +2685,6 @@ bool UHoudiniInputPackedLevelActor::ShouldTrackComponent(UActorComponent const* 
 {
 	// Only track components when the old input system is being used: the old input system treats a packed level actor
 	// instance like a normal actor/world input
-	const bool bExportLevelInstanceContent = InSettings ? InSettings->bExportLevelInstanceContent : CachedInputSettings.bExportLevelInstanceContent;
-	if (!FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled() && bExportLevelInstanceContent)
-		return Super::ShouldTrackComponent(InComponent, InSettings);
 	return false;
 }
 
@@ -2688,16 +2702,13 @@ bool UHoudiniInputLandscape::ShouldTrackComponent(UActorComponent const* InCompo
 	// Use InSettings if provided, otherwise use the settings cached at the last update
 	const FHoudiniInputObjectSettings& Settings = InSettings ? *InSettings : CachedInputSettings;
 
-	if (Settings.bLandscapeAutoSelectSplines && FHoudiniEngineRuntimeUtils::IsLandscapeSplineInputEnabled())
+	if (Settings.bLandscapeAutoSelectSplines)
 	{
 		if (InComponent->IsA(ULandscapeSplinesComponent::StaticClass()))
 			return true;
 
-		if (Settings.bLandscapeSplinesExportSplineMeshComponents && FHoudiniEngineRuntimeUtils::IsSplineMeshInputEnabled()
-				&& InComponent->IsA(USplineMeshComponent::StaticClass()))
-		{
+		if (Settings.bLandscapeSplinesExportSplineMeshComponents && InComponent->IsA(USplineMeshComponent::StaticClass()))
 			return true;
-		}
 	}
 	
 	return false;
@@ -2722,8 +2733,8 @@ bool UHoudiniInputLandscape::HasContentChanged(const FHoudiniInputObjectSettings
 FTransform
 UHoudiniInputLandscape::GetHoudiniObjectTransform() const
 {
-	FTransform T = Transform;
-	T.SetScale3D(FVector::OneVector);
+	ALandscapeProxy* LandscapeProxy = GetLandscapeProxy();
+	FTransform T = FHoudiniEngineRuntimeUtils::CalculateHoudiniLandscapeTransform(LandscapeProxy);
 	return T;
 }
 
@@ -2731,9 +2742,7 @@ void
 UHoudiniInputLandscape::Update(UObject * InObject, const FHoudiniInputObjectSettings& InSettings)
 {
 	// Get the current value for if exporting spline meshes is enabled
-	if (!InSettings.bLandscapeSplinesExportSplineMeshComponents || !InSettings.bMergeSplineMeshComponents
-			|| !FHoudiniEngineRuntimeUtils::IsSplineMeshInputEnabled()
-			|| !FHoudiniEngineRuntimeUtils::IsLandscapeSplineInputEnabled())
+	if (!InSettings.bLandscapeSplinesExportSplineMeshComponents || !InSettings.bMergeSplineMeshComponents)
 	{
 		// Invalidate the merged splines nodes
 		InvalidateSplinesMeshData();
@@ -2741,15 +2750,19 @@ UHoudiniInputLandscape::Update(UObject * InObject, const FHoudiniInputObjectSett
 	
 	Super::Update(InObject, InSettings);
 
-	ALandscapeProxy* Landscape = Cast<ALandscapeProxy>(InObject);
-
-	//ensure(Landscape);
-
-	if (Landscape)
+	ALandscapeProxy* LandscapeProxy = Cast<ALandscapeProxy>(InObject);
+	if (LandscapeProxy)
 	{
-		Transform = FHoudiniEngineRuntimeUtils::CalculateHoudiniLandscapeTransform(Landscape);
+		Transform = LandscapeProxy->GetActorTransform();
 		CachedNumLandscapeComponents = CountLandscapeComponents();
 	}
+}
+
+void UHoudiniInputLandscape::MarkTransformChanged(const bool bInChanged)
+{
+	// Landscape transforms aren't just set on one node in Houdini,
+	// so if the actor transform has changed, update all nodes.
+	MarkChanged(true);	
 }
 
 bool UHoudiniInputLandscape::HasActorTransformChanged() const
@@ -2760,13 +2773,11 @@ bool UHoudiniInputLandscape::HasActorTransformChanged() const
 	if (HasComponentsTransformChanged())
 		return true;
 
-	// We replace the root component transform comparison, with a transform that is calculated, for Houdini, based
-	// on the currently loaded tiles.
 	ALandscapeProxy* LandscapeProxy = GetLandscapeProxy();
 	if (IsValid(LandscapeProxy))
 	{
-		const FTransform HoudiniTransform = FHoudiniEngineRuntimeUtils::CalculateHoudiniLandscapeTransform(LandscapeProxy);
-		if (!Transform.Equals(HoudiniTransform))
+		const FTransform ActorTransform = LandscapeProxy->GetActorTransform();
+		if (!Transform.Equals(ActorTransform))
 		{
 			return true;
 		}
@@ -2782,20 +2793,6 @@ UHoudiniInputBlueprint::GetChangedObjectsAndValidNodes(TArray<UHoudiniInputObjec
 		return true;
 
 	bool bAnyChanges = false;
-	// In the new input system we treat the blueprint/actor as changed (in HasContentChanged()) if there are any component changes
-	if (!FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled())
-	{
-		// Check each of its child objects (components)
-		for (auto* const CurrentComp : GetComponents())
-		{
-			if (!IsValid(CurrentComp))
-				continue;
-
-			if (CurrentComp->GetChangedObjectsAndValidNodes(OutChangedObjects, OutNodeIdsOfUnchangedValidObjects))
-				bAnyChanges = true;
-		}
-	}
-
 	return bAnyChanges;
 }
 
@@ -2818,7 +2815,7 @@ bool
 UHoudiniInputBlueprint::HasContentChanged(const FHoudiniInputObjectSettings& InSettings) const
 {
 	// In the new input system, treat the input blueprint as changed if it has any component changes
-	if (FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled())
+
 	{
 		if (GetLastUpdateNumComponentsAdded() > 0 || GetLastUpdateNumComponentsRemoved() > 0)
 			return true;
@@ -2853,8 +2850,6 @@ UHoudiniInputBlueprint::InvalidateData()
 bool
 UHoudiniInputBlueprint::UsesInputObjectNode() const
 {
-	if (!FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled())
-		return false;
 	return true;
 }
 
@@ -2994,7 +2989,11 @@ UHoudiniInputBlueprint::Update(UObject* InObject, const FHoudiniInputObjectSetti
 						BPSceneComponents.Remove(CurBPComp->InputObject);
 
 					const bool bAllowShrink = false;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
+					BPComponents.RemoveAtSwap(IndexToRemove, 1, bAllowShrink ? EAllowShrinking::Yes : EAllowShrinking::No);
+#else
 					BPComponents.RemoveAtSwap(IndexToRemove, 1, bAllowShrink);
+#endif
 
 					LastUpdateNumComponentsRemoved++;
 				}
@@ -3105,6 +3104,10 @@ UHoudiniInputObject::GetInputObjectTypeFromObject(UObject* InObject)
 		{
 			return EHoudiniInputObjectType::LandscapeSplinesComponent;
 		}
+		else if (InObject->IsA(UAnimSequence::StaticClass()))
+		{
+			return EHoudiniInputObjectType::Animation;
+		}
 		else
 		{
 			return EHoudiniInputObjectType::SceneComponent;
@@ -3160,6 +3163,10 @@ UHoudiniInputObject::GetInputObjectTypeFromObject(UObject* InObject)
 		{
 			return EHoudiniInputObjectType::SkeletalMesh;
 		}
+		else if (InObject->IsA(UAnimSequence::StaticClass()))
+		{
+			return EHoudiniInputObjectType::Animation;
+		}
 		else if (InObject->IsA(UGeometryCollection::StaticClass()))
 		{
 			return EHoudiniInputObjectType::GeometryCollection;
@@ -3173,8 +3180,8 @@ UHoudiniInputObject::GetInputObjectTypeFromObject(UObject* InObject)
 			return EHoudiniInputObjectType::Object;
 		}
 	}
-
-	return EHoudiniInputObjectType::Invalid;
+	// unreachable
+	// return EHoudiniInputObjectType::Invalid;
 }
 
 
@@ -3507,22 +3514,23 @@ UHoudiniInputObject::GetChangedObjectsAndValidNodes(TArray<UHoudiniInputObject*>
 	{
 		// Has changed, needs to be recreated
 		OutChangedObjects.Add(this);
-
 		return true;
 	}
 	
 	if (UsesInputObjectNode())
 	{
-		if (GetInputObjectNodeId() >= 0)
+		// Do not use InputObjectNodeId directly here! 
+		// This can cause issues when dealing with InputActors
+		int32 InObjNodeId = GetInputObjectNodeId();
+		if (InObjNodeId >= 0)
 		{
 			// No changes, keep it
-			OutNodeIdsOfUnchangedValidObjects.Add(InputObjectNodeId);
+			OutNodeIdsOfUnchangedValidObjects.Add(InObjNodeId);
 		}
 		else
 		{
 			// Needs, but does not have, a current HAPI input node
 			OutChangedObjects.Add(this);
-
 			return true;
 		}
 	}

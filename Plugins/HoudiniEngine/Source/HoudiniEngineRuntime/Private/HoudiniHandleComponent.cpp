@@ -31,10 +31,8 @@
 #include "HoudiniParameter.h"
 #include "HoudiniParameterFloat.h"
 #include "HoudiniParameterChoice.h"
-#include "HoudiniRuntimeSettings.h"
-
 #include "HoudiniPluginSerializationVersion.h"
-#include "HoudiniCompatibilityHelpers.h"
+#include "HoudiniRuntimeSettings.h"
 
 #include "Runtime/Launch/Resources/Version.h"
 
@@ -44,6 +42,15 @@
 #endif
 
 #include "Serialization/CustomVersion.h"
+#include "HAL/IConsoleManager.h"
+
+static TAutoConsoleVariable<float> CVarHoudiniEngineHandleTickTime(
+	TEXT("HoudiniEngine.HandleTickTime"),
+	0.5,
+	TEXT("The frequency (in s) at which handles will be updated.\n")
+	TEXT("<= 0.0: Disable updates\n")
+	TEXT("0.5: Default\n")
+);
 
 void
 UHoudiniHandleComponent::Serialize(FArchive& Ar)
@@ -63,33 +70,17 @@ UHoudiniHandleComponent::Serialize(FArchive& Ar)
 
 	if (bLegacyComponent)
 	{
-		const UHoudiniRuntimeSettings * HoudiniRuntimeSettings = GetDefault<UHoudiniRuntimeSettings>();
-		bool bEnableBackwardCompatibility = HoudiniRuntimeSettings->bEnableBackwardCompatibility;
+		HOUDINI_LOG_WARNING(TEXT("Loading deprecated version of UHoudiniHandleComponent : serialized data will be skipped."));
 
-		if (bEnableBackwardCompatibility)
+		Super::Serialize(Ar);
+
+		// Skip v1 Serialized data
+		if (FLinker* Linker = Ar.GetLinker())
 		{
-			HOUDINI_LOG_WARNING(TEXT("Loading deprecated version of UHoudiniHandleComponent : converting v1 object to v2."));
-
-			Super::Serialize(Ar);
-
-			UHoudiniHandleComponent_V1* CompatibilityHC = NewObject<UHoudiniHandleComponent_V1>();
-			CompatibilityHC->Serialize(Ar);
-			CompatibilityHC->UpdateFromLegacyData(this);
-		}
-		else
-		{
-			HOUDINI_LOG_WARNING(TEXT("Loading deprecated version of UHoudiniHandleComponent : serialized data will be skipped."));
-
-			Super::Serialize(Ar);
-
-			// Skip v1 Serialized data
-			if (FLinker* Linker = Ar.GetLinker())
-			{
-				int32 const ExportIndex = this->GetLinkerIndex();
-				FObjectExport& Export = Linker->ExportMap[ExportIndex];
-				Ar.Seek(InitialOffset + Export.SerialSize);
-				return;
-			}
+			int32 const ExportIndex = this->GetLinkerIndex();
+			FObjectExport& Export = Linker->ExportMap[ExportIndex];
+			Ar.Seek(InitialOffset + Export.SerialSize);
+			return;
 		}
 	}
 	else
@@ -105,7 +96,11 @@ UHoudiniHandleParameter::UHoudiniHandleParameter(const FObjectInitializer & Obje
 
 UHoudiniHandleComponent::UHoudiniHandleComponent(const FObjectInitializer & ObjectInitializer)
 	:Super(ObjectInitializer) 
-{};
+{
+	bNeedToUpdateTransform = false;
+	bWantsOnUpdateTransform = true;
+	LastSentTransform = FTransform::Identity;
+};
 
 
 bool 
@@ -259,3 +254,40 @@ UHoudiniHandleComponent::GetBounds() const
 	return BoxBounds + GetComponentLocation();
 }
 
+
+void
+UHoudiniHandleComponent::OnUpdateTransform(EUpdateTransformFlags UpdateTransformFlags, ETeleportType Teleport)
+{
+	Super::OnUpdateTransform(UpdateTransformFlags, Teleport);
+
+#if WITH_EDITOR
+	//if (UpdateTransformFlags != EUpdateTransformFlags::PropagateFromParent)
+	{
+		FTransform NewTransform = GetRelativeTransform();
+		if (!NewTransform.Equals(LastSentTransform))
+		{
+			bNeedToUpdateTransform = true;
+			dLastTransformUpdateTime = FPlatformTime::Seconds();
+		}
+	}
+#endif
+}
+
+bool
+UHoudiniHandleComponent::IsTransformUpdateNeeded()
+{
+	if (!bNeedToUpdateTransform)
+		return false;
+
+	// Use a timer to reduce the frequency of handle updates
+	double dHandleTick = CVarHoudiniEngineHandleTickTime.GetValueOnAnyThread();
+	if (dHandleTick < 0)
+		return false;
+
+	double dNow = FPlatformTime::Seconds();	
+	double dTimeDiff = dNow - dLastTransformUpdateTime;
+	if (dTimeDiff < 0.0 || dTimeDiff < dHandleTick)
+		return false;
+
+	return true;
+}

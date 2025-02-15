@@ -31,23 +31,20 @@
 
 #include "CoreMinimal.h"
 #include "Components/MeshComponent.h"
-#include "Components/SkeletalMeshComponent.h"
 #include "Engine/EngineTypes.h"
 #include "Misc/Optional.h"
 #include "UObject/ObjectMacros.h"
 #include "PhysicalMaterials/PhysicalMaterial.h"
 
 class UStaticMesh;
+class UAnimSequence;
 class UStaticMeshComponent;
 class UStaticMeshSocket;
-
-class USkeletalMesh;
-class USkeletalMeshComponent;
-class USkeletalMeshSocket;
 
 class UMaterialInterface;
 class FUnrealObjectInputHandle;
 class FHoudiniEngineIndexedStringMap;
+class FStaticMeshConstAttributes;
 struct FStaticMeshSourceModel;
 struct FStaticMeshLODResources;
 struct FMeshDescription;
@@ -63,38 +60,15 @@ struct HOUDINIENGINE_API FUnrealMeshTranslator
 			HAPI_NodeId& InputObjectNodeId,
 			const FString& InputNodeName,
 			FUnrealObjectInputHandle& OutHandle,
-			class UStaticMeshComponent* StaticMeshComponent = nullptr,
-			const bool& ExportAllLODs = false,
-			const bool& ExportSockets = false,
-			const bool& ExportColliders = false,
-			const bool& ExportMainMesh = true,
-			const bool& bInputNodesCanBeDeleted = true,
-			const bool& bPreferNaniteFallbackMesh = false,
-			const bool& bExportMaterialParameters = false,
-			const bool& bForceReferenceInputNodeCreation = false);
-
-		// HAPI : Marshaling, extract geometry and skeletons and create input nodes for it - return true on success
-		static bool HapiCreateInputNodeForSkeletalMesh(
-			USkeletalMesh* Mesh,
-			HAPI_NodeId& InputObjectNodeId,
-			const FString& InputNodeName,
-			FUnrealObjectInputHandle& OutHandle,
-			class USkeletalMeshComponent* SkeletalMeshComponent = nullptr,
-			const bool& ExportAllLODs = false,
-			const bool& ExportSockets = false,
-			const bool& ExportColliders = false,
-			const bool& ExportMainMesh  = true,
-			const bool& bInputNodesCanBeDeleted = true,
-			const bool& bExportMaterialParameters = false);
-
-		// Actually exports the skeletal mesh data (mesh, skeleton ... ) to the newly created input node - returns true on success
-		static bool SetSkeletalMeshDataOnNode(
-			USkeletalMesh* SkeletalMesh,
-			USkeletalMeshComponent* SkeletalMeshComponent,
-			HAPI_NodeId& NewNodeId,
-			int32 LODIndex,
-			const bool& bAddLODGroup,
-			const bool bInExportMaterialParametersAsAttributes);
+			class UStaticMeshComponent* StaticMeshComponent,
+			const bool& ExportAllLODs,
+			const bool& ExportSockets,
+			const bool& ExportColliders,
+			const bool& ExportMainMesh,
+			const bool& bInputNodesCanBeDeleted,
+			const bool& bPreferNaniteFallbackMesh,
+			const bool& bExportMaterialParameters,
+			const bool& bForceReferenceInputNodeCreation);
 
 		// Convert the Mesh using FStaticMeshLODResources
 		static bool CreateInputNodeForStaticMeshLODResources(
@@ -106,15 +80,37 @@ struct HOUDINIENGINE_API FUnrealMeshTranslator
 			UStaticMesh* StaticMesh,
 			UStaticMeshComponent* StaticMeshComponent);
 
+		// Helper for converting mesh assets using FMeshDescription
+		static bool CreateAndPopulateMeshPartFromMeshDescription(
+			const HAPI_NodeId& NodeId,
+			const FMeshDescription& MeshDescription,
+			const FStaticMeshConstAttributes& MeshDescriptionAttributes,
+			int32 InLODIndex,
+			bool bAddLODGroups,
+			bool bInExportMaterialParametersAsAttributes,
+			UObject const* Mesh,
+			UMeshComponent const* MeshComponent,
+			const TArray<UMaterialInterface*>& MeshMaterials,
+			const TArray<uint16>& SectionMaterialIndices,
+			const FVector3f& BuildScaleVector,
+			const FString& PhysicalMaterialPath,
+			bool bExportVertexColors,
+			TOptional<int32> LightMapResolution,
+			TOptional<float> LODScreenSize,
+			TOptional<FMeshNaniteSettings> NaniteSettings,
+			UAssetImportData const* ImportData,
+			bool bCommitGeo,
+			HAPI_PartInfo& OutPartInfo);
+
 		// Convert the Mesh using FMeshDescription
 		static bool CreateInputNodeForMeshDescription(
 			const HAPI_NodeId& NodeId,
 			const FMeshDescription& MeshDescription,
-			const int32& LODIndex,
-			const bool&	DoExportLODs,
+			int32 InLODIndex,
+			bool bAddLODGroups,
 			bool bInExportMaterialParametersAsAttributes,
-			UStaticMesh* StaticMesh,
-			UStaticMeshComponent* StaticMeshComponent);
+			UStaticMesh const* StaticMesh,
+			UStaticMeshComponent const* StaticMeshComponent);
 
 		// Convert the Mesh using FRawMesh
 		static bool CreateInputNodeForRawMesh(
@@ -169,12 +165,6 @@ struct HOUDINIENGINE_API FUnrealMeshTranslator
 			const HAPI_NodeId& InParentNodeId,
 			HAPI_NodeId& OutSocketsNodeId);
 
-		static bool CreateInputNodeForSkeletalMeshSockets(
-			USkeletalMesh* InSkeletalMesh,
-			const HAPI_NodeId& InParentNodeId,
-			HAPI_NodeId& OutSocketsNodeId);
-
-
 		// Helper function to extract the array of material names used by a given mesh
 		// This is used for marshalling static mesh's materials.
 		// Memory allocated by this function needs to be cleared by DeleteFaceMaterialArray()
@@ -194,7 +184,8 @@ struct HOUDINIENGINE_API FUnrealMeshTranslator
 			FHoudiniEngineIndexedStringMap& OutStaticMeshFaceMaterials,
 			TMap<FString, TArray<float>>& OutScalarMaterialParameters,
 			TMap<FString, TArray<float>>& OutVectorMaterialParameters,
-			TMap<FString, FHoudiniEngineIndexedStringMap>& OutTextureMaterialParameters);
+			TMap<FString, FHoudiniEngineIndexedStringMap>& OutTextureMaterialParameters,
+			TMap<FString, TArray<int8>>& OutBoolMaterialParameters);
 
 		// Create and set mesh material attribute and material (scalar, vector and texture) parameters attributes
 		static bool CreateHoudiniMeshAttributes(
@@ -205,12 +196,11 @@ struct HOUDINIENGINE_API FUnrealMeshTranslator
 		    const TMap<FString, TArray<float>>& ScalarMaterialParameters,
 		    const TMap<FString, TArray<float>>& VectorMaterialParameters,
 			const TMap<FString, FHoudiniEngineIndexedStringMap>& TextureMaterialParameters,
+			const TMap<FString, TArray<int8>>& BoolMaterialParameters,
 		    const TOptional<FString> PhysicalMaterial = TOptional<FString>(),
 			const TOptional<FMeshNaniteSettings> InNaniteSettings = TOptional<FMeshNaniteSettings>());
 
-	private:
-	    // Gets the simple physical Material path for the mesh component overrides or,
-	    // if not set, from the body setup
-	    static FString GetSimplePhysicalMaterialPath(UMeshComponent* MeshComponent, UBodySetup* BodySetup);
-
+		// Gets the simple physical Material path for the mesh component overrides or,
+		// if not set, from the body setup
+		static FString GetSimplePhysicalMaterialPath(UMeshComponent const* MeshComponent, UBodySetup const* BodySetup);
 };

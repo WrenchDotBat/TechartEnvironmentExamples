@@ -1,3 +1,4 @@
+
 /*
 * Copyright (c) <2021> Side Effects Software Inc.
 * All rights reserved.
@@ -28,27 +29,50 @@
 
 #include "HoudiniEngineEditorPrivatePCH.h"
 
-#include "HoudiniAssetComponentDetails.h"
-#include "HoudiniMeshTranslator.h"
-#include "HoudiniInstanceTranslator.h"
-#include "HoudiniAssetComponent.h"
-#include "HoudiniEngine.h"
-#include "HoudiniEngineUtils.h"
-#include "HoudiniEngineBakeUtils.h"
-#include "HoudiniEngineEditor.h"
-#include "HoudiniEngineEditorUtils.h"
-#include "HoudiniEnginePrivatePCH.h"
-#include "HoudiniEngineEditorPrivatePCH.h"
-#include "HoudiniEngineRuntimePrivatePCH.h"
 #include "HoudiniAsset.h"
+#include "HoudiniAssetComponent.h"
+#include "HoudiniAssetComponentDetails.h"
+#include "HoudiniEngine.h"
+#include "HoudiniEngineBakeUtils.h"
+#include "HoudiniEngineCommands.h"
+#include "HoudiniEngineEditor.h"
+#include "HoudiniEngineEditorPrivatePCH.h"
+#include "HoudiniEngineEditorUtils.h"
+#include "HoudiniEngineOutputStats.h"
+#include "HoudiniEnginePrivatePCH.h"
+#include "HoudiniEngineRuntimePrivatePCH.h"
+#include "HoudiniEngineUtils.h"
+#include "HoudiniInstanceTranslator.h"
+#include "HoudiniMeshTranslator.h"
 #include "HoudiniSplineComponent.h"
 #include "HoudiniStaticMesh.h"
-#include "HoudiniEngineCommands.h"
 
+#include "Animation/AnimSequence.h"
+#include "Animation/Skeleton.h"
+#include "Components/SplineComponent.h"
 #include "DetailCategoryBuilder.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailWidgetRow.h"
+#include "Editor/PropertyEditor/Public/PropertyCustomizationHelpers.h"
+#include "Editor/UnrealEd/Public/AssetThumbnail.h"
+#include "Editor/UnrealEdEngine.h"
+#include "Engine/DataTable.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/SkeletalMesh.h"
 #include "IDetailGroup.h"
+#include "Landscape.h"
+#include "LandscapeProxy.h"
+#include "LandscapeSplineActor.h"
+#include "LandscapeSplinesComponent.h"
+#include "Materials/Material.h"
+#include "Materials/MaterialInstance.h"
+#include "Materials/MaterialInstanceConstant.h"
+#include "Particles/ParticleSystem.h"
+#include "PhysicsEngine/BodySetup.h"
+#include "SAssetDropTarget.h"
+#include "ScopedTransaction.h"
+#include "Sound/SoundBase.h"
+#include "UnrealEdGlobals.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SEditableTextBox.h"
@@ -57,29 +81,10 @@
 #include "Widgets/Input/SRotatorInputBox.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Text/STextBlock.h"
-#include "Editor/UnrealEd/Public/AssetThumbnail.h"
-#include "SAssetDropTarget.h"
-#include "Engine/DataTable.h"
-#include "Engine/StaticMesh.h"
-#include "Components/SplineComponent.h"
-#include "Materials/Material.h"
-#include "Materials/MaterialInstance.h"
-#include "Materials/MaterialInstanceConstant.h"
-#include "Sound/SoundBase.h"
-#include "Engine/SkeletalMesh.h"
-#include "Particles/ParticleSystem.h"
-//#include "Landscape.h"
-#include "HoudiniEngineOutputStats.h"
-#include "Landscape.h"
-#include "LandscapeProxy.h"
-#include "LandscapeSplineActor.h"
-#include "LandscapeSplinesComponent.h"
-#include "Materials/MaterialInstance.h"
-#include "ScopedTransaction.h"
-#include "PhysicsEngine/BodySetup.h"
-#include "UnrealEdGlobals.h"
-#include "Editor/UnrealEdEngine.h"
-#include "Editor/PropertyEditor/Public/PropertyCustomizationHelpers.h"
+
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION > 1
+	#include "Engine/SkinnedAssetCommon.h"
+#endif
 
 #if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 3
 	#include "GeometryCollection/GeometryCollectionActor.h"
@@ -150,16 +155,18 @@ FHoudiniOutputDetails::CreateWidget(
 		}
 		case EHoudiniOutputType::LandscapeSpline:
 		{
-			if (!FHoudiniEngineRuntimeUtils::IsLandscapeSplineOutputEnabled())
-				FHoudiniOutputDetails::CreateDefaultOutputWidget(HouOutputCategory, MainOutput);
-			else
-				FHoudiniOutputDetails::CreateLandscapeSplineOutputWidget(HouOutputCategory, MainOutput);
+			FHoudiniOutputDetails::CreateLandscapeSplineOutputWidget(HouOutputCategory, MainOutput);
+			break;
+		}
+		case EHoudiniOutputType::AnimSequence:
+		{
+			FHoudiniOutputDetails::CreateAnimSequenceOutputWidget(HouOutputCategory, MainOutput);
 			break;
 		}
 		case EHoudiniOutputType::Skeletal:
 		default: 
 		{
-			FHoudiniOutputDetails::CreateDefaultOutputWidget(HouOutputCategory, MainOutput);
+			FHoudiniOutputDetails::CreateSkeletalOutputWidget(HouOutputCategory, MainOutput);
 			break;
 		}
 	}
@@ -307,7 +314,7 @@ FHoudiniOutputDetails::CreateLandscapeOutputWidget_Helper(
 				if (InOutput.IsValid())
 				{
 					FHoudiniOutputDetails::OnBakeNameCommitted(Val, TextCommitType, InOutput, OutputIdentifier);
-					FHoudiniEngineUtils::UpdateEditorProperties(InOutput.Get(), true);
+					FHoudiniEngineUtils::UpdateEditorProperties(true);
 				}
 			})
 		]
@@ -392,7 +399,10 @@ FHoudiniOutputDetails::CreateLandscapeOutputWidget_Helper(
 					{
 						if (!InOutput.IsValid() || !HAC.IsValid() || !Landscape.IsValid())
 							return FReply::Handled();
-						
+
+						FHoudiniBakeSettings BakeSettings;
+						BakeSettings.SetFromHAC(HAC.Get());
+
 						FHoudiniOutputObject const* const FoundOutputObject = InOutput->GetOutputObjects().Find(OutputIdentifier);
 						if (FoundOutputObject)
 						{
@@ -406,9 +416,10 @@ FHoudiniOutputDetails::CreateLandscapeOutputWidget_Helper(
 								*FoundOutputObject,
 								HGPO,
 								HAC.Get(),
+								InOutput.Get(),
 								HAC->BakeFolder.Path,
+								BakeSettings,
 								HAC->TemporaryCookFolder.Path,
-								InOutput->GetType(),
 								LandscapeOutputBakeType,
 								AllOutputs);
 						}
@@ -460,7 +471,7 @@ FHoudiniOutputDetails::CreateLandscapeOutputWidget_Helper(
 							}
 
 							if (InOutput.IsValid())
-								FHoudiniEngineUtils::UpdateEditorProperties(InOutput.Get(), true);
+								FHoudiniEngineUtils::UpdateEditorProperties(true);
 						})
 					[
 						SNew(STextBlock)
@@ -799,14 +810,241 @@ FHoudiniOutputDetails::CreateMeshOutputWidget(
 		{
 			// If we have a static mesh, display its widget unless the proxy is more recent
 			CreateStaticMeshAndMaterialWidgets(
-				HouOutputCategory, InOutput, StaticMesh, OutputIdentifier, HAC->BakeFolder.Path, HoudiniGeoPartObject, bIsProxyMeshCurrent);
+				HouOutputCategory, InOutput, StaticMesh, OutputIdentifier, HoudiniGeoPartObject, bIsProxyMeshCurrent);
 		}
 		else
 		{
 			// If we only have a proxy mesh, then show the proxy widget
 			CreateProxyMeshAndMaterialWidgets(
-				HouOutputCategory, InOutput, ProxyMesh, OutputIdentifier, HAC->BakeFolder.Path, HoudiniGeoPartObject);
+				HouOutputCategory, InOutput, ProxyMesh, OutputIdentifier, HoudiniGeoPartObject);
 		}
+	}
+}
+
+
+void
+FHoudiniOutputDetails::CreateSkeletalOutputWidget(
+	IDetailCategoryBuilder& HouOutputCategory,
+	const TWeakObjectPtr<UHoudiniOutput>& InOutput)
+{
+	if (!IsValidWeakPointer(InOutput))
+		return;
+
+	const TWeakObjectPtr<UHoudiniAssetComponent>& HAC = Cast<UHoudiniAssetComponent>(InOutput->GetOuter());
+	if (!IsValidWeakPointer(HAC))
+		return;
+
+	// See if we have a Skeletal Mesh and/or skeleton.
+	USkeletalMesh* SkelMesh = nullptr;
+	USkeleton* Skeleton = nullptr;
+	UPhysicsAsset * PhysicsAsset = nullptr;
+	FHoudiniOutputObjectIdentifier OutputIdentifier;
+
+	TMap<FHoudiniOutputObjectIdentifier, FHoudiniOutputObject>& OutputObjects = InOutput->GetOutputObjects();
+	for (auto& IterObject : OutputObjects)
+	{
+		if (!SkelMesh)
+		{
+			SkelMesh = Cast<USkeletalMesh>(IterObject.Value.OutputObject);
+			OutputIdentifier = IterObject.Key;
+		}
+		if (!Skeleton)
+		{
+			Skeleton = Cast<USkeleton>(IterObject.Value.OutputObject);
+
+			if (SkelMesh == nullptr)
+				OutputIdentifier = IterObject.Key;
+		}
+		if (!PhysicsAsset)
+		{
+			PhysicsAsset = Cast<UPhysicsAsset>(IterObject.Value.OutputObject);
+
+			if (SkelMesh == nullptr)
+				OutputIdentifier = IterObject.Key;
+		}
+	}
+
+	if ((!IsValid(SkelMesh)) && (!IsValid(Skeleton)))
+			return;
+
+	// Find the corresponding HGPO in the output
+	FHoudiniGeoPartObject HoudiniGeoPartObject;
+	for (const auto& curHGPO : InOutput->GetHoudiniGeoPartObjects())
+	{
+		if (OutputIdentifier.Matches(curHGPO))
+		{
+			HoudiniGeoPartObject = curHGPO;
+			break;
+		}
+	}
+
+	// If we have a Skeletal mesh, display its widget unless the proxy is more recent
+	CreateSkeletalMeshAndMaterialWidgets(HouOutputCategory, InOutput, SkelMesh, Skeleton, PhysicsAsset, OutputIdentifier, HoudiniGeoPartObject);
+}
+
+void FHoudiniOutputDetails::CreateAnimSequenceOutputWidget(IDetailCategoryBuilder& HouOutputCategory,
+	const TWeakObjectPtr<UHoudiniOutput>& InOutput)
+{
+	if (!IsValidWeakPointer(InOutput))
+		return;
+
+	if (!IsValidWeakPointer(InOutput))
+		return;
+
+	TMap<FHoudiniOutputObjectIdentifier, FHoudiniOutputObject>& OutputObjects = InOutput->GetOutputObjects();
+	int32 Idx = 1;
+	for (auto& IterObject : OutputObjects)
+	{
+		FHoudiniOutputObject& CurrentOutputObject = IterObject.Value;
+		
+	    if (UAnimSequence* AnimSequence = Cast<UAnimSequence>(CurrentOutputObject.OutputObject))
+	    {
+	    	if (!IsValid(AnimSequence))
+	    	{
+	    		continue;
+	    	}
+	    	FString Label = AnimSequence->GetName();
+	    	IDetailGroup& OutputGrp = HouOutputCategory.AddGroup(FName(Label), FText::FromString(Label), false, false);
+		    TSharedRef<SVerticalBox> VerticalBox = SNew(SVerticalBox);
+		    TSharedPtr<SBorder> ThumbnailBorder;
+		    IDetailLayoutBuilder& DetailLayoutBuilder = HouOutputCategory.GetParentLayout();
+		    TSharedPtr<FAssetThumbnailPool> AssetThumbnailPool = DetailLayoutBuilder.GetThumbnailPool();
+		    TSharedPtr< FAssetThumbnail > AnimThumbnail =
+			    MakeShareable(new FAssetThumbnail(AnimSequence, 64, 64, AssetThumbnailPool));
+
+		    OutputGrp.AddWidgetRow()
+		    .NameContent()
+		    [
+			    SNew(STextBlock)
+			    .Text(FText::FromString("Anim Sequence"))
+			    .Font(IDetailLayoutBuilder::GetDetailFont())
+		    ]
+		    .ValueContent()
+		    .MinDesiredWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
+		    [
+			    VerticalBox
+		    ];
+
+		    VerticalBox->AddSlot()
+		    .Padding(0, 2)
+		    .AutoHeight()
+		    [
+			    SNew(SHorizontalBox)
+			    + SHorizontalBox::Slot()
+			    .Padding(0.0f, 0.0f, 2.0f, 0.0f)
+			    .AutoWidth()
+			    [
+				    SAssignNew(ThumbnailBorder, SBorder)
+					    .Padding(5.0f)
+					    .BorderImage(this, &FHoudiniOutputDetails::GetThumbnailBorder, (const TWeakObjectPtr<UObject>&) AnimSequence)
+					    .OnMouseDoubleClick(this, &FHoudiniOutputDetails::OnThumbnailDoubleClick, (const TWeakObjectPtr<UObject>&) AnimSequence)
+				    [
+					    SNew(SBox)
+						    .WidthOverride(64)
+						    .HeightOverride(64)
+						    .ToolTipText(FText::FromString(AnimSequence->GetPathName()))
+					    [
+						    AnimThumbnail->MakeThumbnailWidget()
+					    ]
+				    ]
+			    ]
+			    + SHorizontalBox::Slot()
+			    .AutoWidth()
+			    .Padding(2.0f, 0.0f)
+			    .VAlign(VAlign_Center)
+			    [
+				    SNew(SVerticalBox)
+				    + SVerticalBox::Slot()
+				    .AutoHeight()
+				    .Padding(2.0f, 0.0f)
+				    .VAlign(VAlign_Center)
+				    [
+					    SNew(STextBlock)
+					    .Text(FText::FromName(AnimSequence->GetFName()))
+					    .Font(IDetailLayoutBuilder::GetDetailFont())
+				    ]
+				    + SVerticalBox::Slot()
+				    .AutoHeight()
+				    .Padding(2, 0)
+				    .VAlign(VAlign_Center)
+				    .HAlign(HAlign_Left)
+				    [
+					    PropertyCustomizationHelpers::MakeBrowseButton(
+						    FSimpleDelegate::CreateSP(
+							    this, &FHoudiniOutputDetails::OnBrowseTo, (const TWeakObjectPtr<UObject>&) AnimSequence),
+						    TAttribute<FText>(LOCTEXT("HoudiniAnimSequenceBrowseButton", "Browse to this asset in the content browser")))
+				    ]
+			    ]
+		    ];
+
+		    // OutputGrp.AddWidgetRow()
+		    // .NameContent()
+		    // [
+			   //  SNew(STextBlock)
+			   //  .Text(FText::FromString("Row Struct"))
+			   //  .Font(IDetailLayoutBuilder::GetDetailFont())
+		    // ]
+		    // .ValueContent()
+		    // .MinDesiredWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
+		    // [
+			   //  RSVerticalBox
+		    // ];
+		    //
+		    // RSVerticalBox->AddSlot()
+		    // .Padding(0, 2)
+		    // .AutoHeight()
+		    // [
+			   //  SNew(SHorizontalBox)
+			   //  + SHorizontalBox::Slot()
+			   //  .Padding(0.0f, 0.0f, 2.0f, 0.0f)
+			   //  .AutoWidth()
+			   //  [
+				  //   SAssignNew(RSThumbnailBorder, SBorder)
+				  //   .Padding(5.0f)
+				  //   .BorderImage(this, &FHoudiniOutputDetails::GetThumbnailBorder, (const TWeakObjectPtr<UObject>&) DT->RowStruct)
+				  //   .OnMouseDoubleClick(this, &FHoudiniOutputDetails::OnThumbnailDoubleClick, (const TWeakObjectPtr<UObject>&) DT->RowStruct)
+				  //   [
+					 //    SNew(SBox)
+					 //    .WidthOverride(64)
+					 //    .HeightOverride(64)
+					 //    .ToolTipText(FText::FromName(DT->RowStruct->GetFName()))
+					 //    [
+						//     RSThumbnail->MakeThumbnailWidget()
+					 //    ]
+				  //   ]
+			   //  ]
+			   //  + SHorizontalBox::Slot()
+			   //  .AutoWidth()
+			   //  .Padding(2.0f, 0.0f)
+			   //  .VAlign(VAlign_Center)
+			   //  [
+				  //   SNew(SVerticalBox)
+				  //   + SVerticalBox::Slot()
+				  //   .AutoHeight()
+				  //   .Padding(2.0f, 0.0f)
+				  //   .VAlign(VAlign_Center)
+				  //   [
+					 //    SNew(STextBlock)
+					 //    .Text(FText::FromName(DT->RowStruct->GetFName()))
+					 //    .Font(IDetailLayoutBuilder::GetDetailFont())
+				  //   ]
+				  //   + SVerticalBox::Slot()
+				  //   .AutoHeight()
+				  //   .Padding(2.0f, 0.0f)
+				  //   .VAlign(VAlign_Center)
+				  //   .HAlign(HAlign_Left)
+				  //   [
+					 //    PropertyCustomizationHelpers::MakeBrowseButton(
+						//     FSimpleDelegate::CreateSP(
+						// 	    this, &FHoudiniOutputDetails::OnBrowseTo, (const TWeakObjectPtr<UObject>&) DT->RowStruct),
+						//     TAttribute<FText>(LOCTEXT("HoudiniDataTableRowStructBrowseButton", "Browse to the generated Data Table's row struct in the content browser")))
+				  //   ]
+			   //  ]
+			   //  
+		    // ];
+
+		    OutputObjectThumbnailBorders.Add((UObject*) AnimSequence, ThumbnailBorder);
+	    }
 	}
 }
 
@@ -1234,7 +1472,7 @@ FHoudiniOutputDetails::CreateCurveWidgets(
 				if (InOutput.IsValid())
 				{
 					FHoudiniOutputDetails::OnBakeNameCommitted(Val, TextCommitType, InOutput, OutputIdentifier);
-					FHoudiniEngineUtils::UpdateEditorProperties(InOutput.Get(), true);
+					FHoudiniEngineUtils::UpdateEditorProperties(true);
 				}
 			})
 		]
@@ -1361,7 +1599,7 @@ FHoudiniOutputDetails::CreateCurveWidgets(
 				}
 
 				FHoudiniEngineEditorUtils::ReselectSelectedActors();
-				FHoudiniEngineUtils::UpdateEditorProperties(InOutput.Get(), true);
+				FHoudiniEngineUtils::UpdateEditorProperties(true);
 			}
 			else if (*NewChoiceStr == "Curve")
 			{
@@ -1376,7 +1614,7 @@ FHoudiniOutputDetails::CreateCurveWidgets(
 				}
 
 				FHoudiniEngineEditorUtils::ReselectSelectedActors();
-				FHoudiniEngineUtils::UpdateEditorProperties(InOutput.Get(), true);
+				FHoudiniEngineUtils::UpdateEditorProperties(true);
 			}
 		})
 		[
@@ -1413,7 +1651,7 @@ FHoudiniOutputDetails::CreateCurveWidgets(
 				FHoudiniEngineEditorUtils::ReselectSelectedActors();
 
 				if (InOutput.IsValid())
-					FHoudiniEngineUtils::UpdateEditorProperties(InOutput.Get(), true);
+					FHoudiniEngineUtils::UpdateEditorProperties(true);
 			})
 			.IsChecked_Lambda([UnrealSpline]()
 			{
@@ -1463,6 +1701,8 @@ FHoudiniOutputDetails::CreateCurveWidgets(
 				break;
 			}
 
+			FHoudiniBakeSettings BakeSettings;
+
 			FHoudiniOutputDetails::OnBakeOutputObject(
 				OutputCurveName,
 				SplineComponent.Get(),
@@ -1470,9 +1710,10 @@ FHoudiniOutputDetails::CreateCurveWidgets(
 				*OutputObject,
 				HoudiniGeoPartObject,
 				HAC.Get(),
+				InOutput.Get(),
 				HAC->BakeFolder.Path,
+				BakeSettings,
 				HAC->TemporaryCookFolder.Path,
-				InOutput->GetType(),
 				EHoudiniLandscapeOutputBakeType::InValid,
 				AllOutputs);
 
@@ -1582,14 +1823,12 @@ void FHoudiniOutputDetails::CreateGeometryCollectionWidgets(IDetailCategoryBuild
 	
 }
 
-
 void
 FHoudiniOutputDetails::CreateStaticMeshAndMaterialWidgets(
 	IDetailCategoryBuilder& HouOutputCategory,
 	const TWeakObjectPtr<UHoudiniOutput>& InOutput,
 	const TWeakObjectPtr<UStaticMesh>& StaticMesh,
 	FHoudiniOutputObjectIdentifier& OutputIdentifier,
-	const FString BakeFolder,
 	FHoudiniGeoPartObject& HoudiniGeoPartObject,
 	const bool& bIsProxyMeshCurrent)
 {
@@ -1620,7 +1859,7 @@ FHoudiniOutputDetails::CreateStaticMeshAndMaterialWidgets(
 	IDetailGroup& StaticMeshGrp = HouOutputCategory.AddGroup(FName(*Label), FText::FromString(Label));
 	StaticMeshGrp.AddWidgetRow()
 	.NameContent()
-	[
+[
 		SNew(STextBlock)
 		.Text(LOCTEXT("BakeBaseName", "Bake Name"))
 		.Font(IDetailLayoutBuilder::GetDetailFont())
@@ -1644,7 +1883,7 @@ FHoudiniOutputDetails::CreateStaticMeshAndMaterialWidgets(
 					return;
 
 				FHoudiniOutputDetails::OnBakeNameCommitted(Val, TextCommitType, InOutput, OutputIdentifier);
-				FHoudiniEngineUtils::UpdateEditorProperties(InOutput->GetOuter(), true);
+				FHoudiniEngineUtils::UpdateEditorProperties(true);
 			})
 			.ToolTipText( LOCTEXT( "BakeNameTip", "The base name of the baked asset") )
 		]
@@ -1662,7 +1901,7 @@ FHoudiniOutputDetails::CreateStaticMeshAndMaterialWidgets(
 			.OnClicked_Lambda([InOutput, OutputIdentifier]() 
 			{
 				FHoudiniOutputDetails::OnRevertBakeNameToDefault(InOutput, OutputIdentifier);
-				FHoudiniEngineUtils::UpdateEditorProperties(InOutput->GetOuter(), true);
+				FHoudiniEngineUtils::UpdateEditorProperties(true);
 				return FReply::Handled();
 			})
 			[
@@ -1785,7 +2024,7 @@ FHoudiniOutputDetails::CreateStaticMeshAndMaterialWidgets(
 					.HAlign( HAlign_Center )
 					.Text( LOCTEXT( "BakeOutputMesh", "Bake Output" ) )
 					.IsEnabled(true)
-					.OnClicked_Lambda([BakeName, StaticMesh, OutputIdentifier, BakeFolder, InOutput, OwningHAC]()
+					.OnClicked_Lambda([BakeName, StaticMesh, OutputIdentifier, InOutput, OwningHAC]()
 					{
 						if (!StaticMesh.IsValid() || !InOutput.IsValid())
 							return FReply::Handled();
@@ -1796,14 +2035,19 @@ FHoudiniOutputDetails::CreateStaticMeshAndMaterialWidgets(
 
 						TArray<UHoudiniOutput*> AllOutputs;
 						FString TempCookFolder;
+						FString BakeFolder;
 						if (OwningHAC.IsValid())
 						{
 							AllOutputs.Reserve(OwningHAC->GetNumOutputs());
 							OwningHAC->GetOutputs(AllOutputs);
 
 							TempCookFolder = OwningHAC->TemporaryCookFolder.Path;
+							BakeFolder = OwningHAC->BakeFolder.Path;
 						}
-						
+
+						FHoudiniBakeSettings BakeSettings;
+						BakeSettings.SetFromHAC(OwningHAC.Get());
+
 						FHoudiniGeoPartObject HoudiniGeoPartObject;
 						for (const auto& curHGPO : InOutput->GetHoudiniGeoPartObjects())
 						{
@@ -1821,9 +2065,10 @@ FHoudiniOutputDetails::CreateStaticMeshAndMaterialWidgets(
 							*FoundOutputObject,
 							HoudiniGeoPartObject,
 							OwningHAC.Get(),
+							InOutput.Get(),
 							BakeFolder,
+							BakeSettings,
 							TempCookFolder,
-							InOutput->GetType(),
 							EHoudiniLandscapeOutputBakeType::InValid,
 							AllOutputs);
 
@@ -2013,7 +2258,6 @@ FHoudiniOutputDetails::CreateProxyMeshAndMaterialWidgets(
 	const TWeakObjectPtr<UHoudiniOutput>& InOutput,
 	const TWeakObjectPtr<UHoudiniStaticMesh>& ProxyMesh,
 	FHoudiniOutputObjectIdentifier& OutputIdentifier,
-	const FString BakeFolder,
 	FHoudiniGeoPartObject& HoudiniGeoPartObject)
 {
 	if (!IsValidWeakPointer(ProxyMesh))
@@ -2062,7 +2306,7 @@ FHoudiniOutputDetails::CreateProxyMeshAndMaterialWidgets(
 			.OnTextCommitted_Lambda([OutputIdentifier, InOutput](const FText& Val, ETextCommit::Type TextCommitType)
 			{
 				FHoudiniOutputDetails::OnBakeNameCommitted(Val, TextCommitType, InOutput, OutputIdentifier);
-				FHoudiniEngineUtils::UpdateEditorProperties(InOutput->GetOuter(), true);
+				FHoudiniEngineUtils::UpdateEditorProperties(true);
 			})
 			.ToolTipText(LOCTEXT("BakeNameTip", "The base name of the baked asset"))
 		]
@@ -2079,7 +2323,7 @@ FHoudiniOutputDetails::CreateProxyMeshAndMaterialWidgets(
 			.OnClicked_Lambda([InOutput, OutputIdentifier]()
 			{
 				FHoudiniOutputDetails::OnRevertBakeNameToDefault(InOutput, OutputIdentifier);
-				FHoudiniEngineUtils::UpdateEditorProperties(InOutput->GetOuter(), true);
+				FHoudiniEngineUtils::UpdateEditorProperties(true);
 				return FReply::Handled();
 			})
 			[
@@ -2563,7 +2807,7 @@ FHoudiniOutputDetails::OnResetMaterialInterfaceClicked(
 
 	// Try to find the original assignment, if not, we'll use the default material
 	UMaterialInterface * AssignMaterial = FHoudiniEngine::Get().GetHoudiniDefaultMaterial().Get();
-	UMaterialInterface * const * FoundMat = HoudiniOutput->GetAssignementMaterials().Find(MaterialIdentifier);
+	TObjectPtr<UMaterialInterface> * FoundMat = HoudiniOutput->GetAssignementMaterials().Find(MaterialIdentifier);
 	if (FoundMat && (*FoundMat))
 		AssignMaterial = *FoundMat;
 
@@ -2590,7 +2834,7 @@ FHoudiniOutputDetails::OnResetMaterialInterfaceClicked(
 		}
 	}
 
-	FHoudiniEngineUtils::UpdateEditorProperties(HoudiniOutput->GetOuter(), true);
+	FHoudiniEngineUtils::UpdateEditorProperties(true);
 
 	if (GEditor)
 		GEditor->RedrawAllViewports();
@@ -2636,7 +2880,7 @@ FHoudiniOutputDetails::OnResetMaterialInterfaceClicked(
 
 	// Try to find the original assignment, if not, we'll use the default material
 	UMaterialInterface * AssignMaterial = FHoudiniEngine::Get().GetHoudiniDefaultMaterial().Get();
-	UMaterialInterface * const * FoundMat = InHoudiniOutput->GetAssignementMaterials().Find(MaterialIdentifier);
+	TObjectPtr<UMaterialInterface> * FoundMat = InHoudiniOutput->GetAssignementMaterials().Find(MaterialIdentifier);
 	if (FoundMat && (*FoundMat))
 		AssignMaterial = *FoundMat;
 
@@ -2665,7 +2909,7 @@ FHoudiniOutputDetails::OnResetMaterialInterfaceClicked(
 	}
 	*/
 
-	FHoudiniEngineUtils::UpdateEditorProperties(InHoudiniOutput->GetOuter(), true);
+	FHoudiniEngineUtils::UpdateEditorProperties(true);
 
 	if (GEditor)
 		GEditor->RedrawAllViewports();
@@ -2924,7 +3168,7 @@ FHoudiniOutputDetails::OnMaterialInterfaceDropped(
 		}
 	}
 
-	FHoudiniEngineUtils::UpdateEditorProperties(HoudiniOutput->GetOuter(), true);
+	FHoudiniEngineUtils::UpdateEditorProperties(true);
 
 	/*
 	if(GUnrealEd)
@@ -3049,7 +3293,7 @@ FHoudiniOutputDetails::OnMaterialInterfaceDropped(
 	}
 	*/
 
-	FHoudiniEngineUtils::UpdateEditorProperties(InOutput->GetOuter(), true);
+	FHoudiniEngineUtils::UpdateEditorProperties(true);
 
 	if (GEditor)
 		GEditor->RedrawAllViewports();
@@ -3198,7 +3442,7 @@ FHoudiniOutputDetails::CreateInstancerOutputWidget(
 		InOutputToUpdate.MarkChanged(true);
 
 		if (InOutput.IsValid())
-			FHoudiniEngineUtils::UpdateEditorProperties(InOutput.Get(), true);
+			FHoudiniEngineUtils::UpdateEditorProperties(true);
 	};
 
 	// Lambda for adding new geometry input objects
@@ -3219,7 +3463,7 @@ FHoudiniOutputDetails::CreateInstancerOutputWidget(
 		InOutputToUpdate.MarkChanged(true);
 
 		if (InOutput.IsValid())
-			FHoudiniEngineUtils::UpdateEditorProperties(InOutput.Get(), true);
+			FHoudiniEngineUtils::UpdateEditorProperties(true);
 	};
 
 	// Lambda for updating a variation
@@ -3233,7 +3477,7 @@ FHoudiniOutputDetails::CreateInstancerOutputWidget(
 		InOutputToUpdate.MarkChanged(true);
 
 		if (InOutput.IsValid())
-			FHoudiniEngineUtils::UpdateEditorProperties(InOutput.Get(), true);
+			FHoudiniEngineUtils::UpdateEditorProperties(true);
 	};
 
 	// Lambda for changing the transform offset values
@@ -3251,11 +3495,15 @@ FHoudiniOutputDetails::CreateInstancerOutputWidget(
 			GEditor->RedrawAllViewports();
 
 		if (InOutput.IsValid())
-			FHoudiniEngineUtils::UpdateEditorProperties(InOutput.Get(), true);
+			FHoudiniEngineUtils::UpdateEditorProperties(true);
 	};
 
 	// Get this output's OutputObject
 	const TMap<FHoudiniOutputObjectIdentifier, FHoudiniOutputObject>& OutputObjects = InOutput->GetOutputObjects();
+
+	// Get Runtime settings to get the default bake Folder
+	const UHoudiniRuntimeSettings* HoudiniRuntimeSettings = GetDefault<UHoudiniRuntimeSettings>();
+	bool bEnableDeprecatedInstanceVariations = IsValid(HoudiniRuntimeSettings) ? HoudiniRuntimeSettings->bEnableDeprecatedInstanceVariations : false;
 
 	// Iterate on all of the output's HGPO
 	for (const FHoudiniGeoPartObject& CurHGPO : InOutput->GetHoudiniGeoPartObjects())
@@ -3288,690 +3536,804 @@ FHoudiniOutputDetails::CreateInstancerOutputWidget(
 			if (CurInstanceOutput.OriginalTransforms.Num() <= 1)
 				continue;
 
-			for( int32 VariationIdx = 0; VariationIdx < CurInstanceOutput.VariationObjects.Num(); VariationIdx++ )
+			if (!bEnableDeprecatedInstanceVariations)
 			{
-				UObject * InstancedObject = CurInstanceOutput.VariationObjects[VariationIdx].LoadSynchronous();
-				if ( !IsValid(InstancedObject) )
+				UObject* InstancedObject = CurInstanceOutput.OriginalObject.LoadSynchronous();
+				if (!IsValid(InstancedObject))
 				{
-					HOUDINI_LOG_WARNING( TEXT("Null Object found for instance variation %d"), VariationIdx );
+					HOUDINI_LOG_WARNING(TEXT("Null Object found for instance "));
 					continue;
 				}
 
 				// Create thumbnail for this object.
-				TSharedPtr<FAssetThumbnail> VariationThumbnail =
+				TSharedPtr<FAssetThumbnail> Thumbnail =
 					MakeShareable(new FAssetThumbnail(InstancedObject, 64, 64, AssetThumbnailPool));
 				TSharedRef<SVerticalBox> PickerVerticalBox = SNew(SVerticalBox);
 				TSharedPtr<SHorizontalBox> PickerHorizontalBox = nullptr;
-				TSharedPtr<SBorder> VariationThumbnailBorder;
+				TSharedPtr<SBorder> ThumbnailBorder;
 
 				// For the variation name, reuse the instancer label and append the variation index if we have more than one variation
-				FString InstanceOutputLabel = InstancerLabel;
-				if(CurInstanceOutput.VariationObjects.Num() > 1)
-					InstanceOutputLabel += TEXT(" [") + FString::FromInt(VariationIdx) + TEXT("]");
+				FString InstanceOutputLabel = FString::Printf(TEXT("%d Instances"), CurInstanceOutput.OriginalInstanceIndices.Num());
 
 				IDetailGroup* DetailGroup = &InstancerGroup;
-				if (CurInstanceOutput.VariationObjects.Num() > 1)
-				{
-					// If we have more than one variation, add a new group for each variation
-					DetailGroup = &InstancerGroup.AddGroup(FName(*InstanceOutputLabel), FText::FromString(InstanceOutputLabel), true);
-				}
 
 				// See if we can find the corresponding component to get its type
-				FString InstancerType = TEXT("(Instancer)"); 
-				FHoudiniOutputObjectIdentifier CurVariationIdentifier = CurOutputObjectIdentifier;
-				CurVariationIdentifier.SplitIdentifier += TEXT("_") + FString::FromInt(VariationIdx);
-				const FHoudiniOutputObject* VariationOutputObject = OutputObjects.Find(CurVariationIdentifier);
-				if(VariationOutputObject && VariationOutputObject->OutputComponents.Num() > 0)
-					InstancerType = FHoudiniInstanceTranslator::GetInstancerTypeFromComponent(VariationOutputObject->OutputComponents[0]);
+				FString InstancerType = TEXT("(Instancer)");
+				const FHoudiniOutputObject* OutputObject = OutputObjects.Find(CurOutputObjectIdentifier);
+				if (OutputObject && OutputObject->OutputComponents.Num() > 0)
+					InstancerType = FHoudiniInstanceTranslator::GetInstancerTypeFromComponent(OutputObject->OutputComponents[0]);
 
-				FString VariationLabel = TEXT(" [") + CurVariationIdentifier.SplitIdentifier + TEXT("] ") + InstancerType;
 				DetailGroup->AddWidgetRow()
-				.NameContent()
-				[
-					//SNew(SSpacer)
-					SNew(STextBlock)
-					.TextStyle(_GetEditorStyle(), "PropertyEditor.AssetClass")
-					.Font(_GetEditorStyle().GetFontStyle(FName(TEXT("PropertyWindow.NormalFont"))))
-					.Text(FText::FromString(VariationLabel))
-					//.Size(FVector2D(250, 64))
-				]
-				.ValueContent()
-				.MinDesiredWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
-				[
-					PickerVerticalBox
-				];
+					.NameContent()
+					[
+						//SNew(SSpacer)
+						SNew(STextBlock)
+						.TextStyle(_GetEditorStyle(), "PropertyEditor.AssetClass")
+						.Font(_GetEditorStyle().GetFontStyle(FName(TEXT("PropertyWindow.NormalFont"))))
+						.Text(FText::FromString(InstanceOutputLabel))
 
-				// Add an asset drop target
+					]
+					.ValueContent()
+					.MinDesiredWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
+					[
+						PickerVerticalBox
+					];
+
 				PickerVerticalBox->AddSlot()
-				.Padding(0, 2)
-				.AutoHeight()
-				[
-					SNew(SAssetDropTarget)
-					.OnAreAssetsAcceptableForDrop(SAssetDropTarget::FAreAssetsAcceptableForDrop::CreateLambda(
-						[DisallowedClasses](TArrayView<FAssetData> InAssets)
-						{
-							UObject* Obj = InAssets[0].GetAsset();
-							for (auto Klass : DisallowedClasses)
-							{
-								if (Obj && Obj->IsA(Klass))
-									return false;
-							}
-							return true;
-						})
-					)
-					.OnAssetsDropped_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, SetObjectAt](const FDragDropEvent&, TArrayView<FAssetData> InAssets)
-					{
-						FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-						if (!InstanceOutput)
-							return;
-						
-						return SetObjectAt(*InstanceOutput, VariationIdx, InAssets[0].GetAsset());
-					})
+					.Padding(0, 2)
+					.AutoHeight()
 					[
 						SAssignNew(PickerHorizontalBox, SHorizontalBox)
-					]
-				];
+					];
 
 				PickerHorizontalBox->AddSlot().Padding(0.0f, 0.0f, 2.0f, 0.0f).AutoWidth()
-				[
-					SAssignNew(VariationThumbnailBorder, SBorder)
-					.Padding( 5.0f )
-					.OnMouseDoubleClick(this, &FHoudiniOutputDetails::OnThumbnailDoubleClick, TWeakObjectPtr<UObject>(InstancedObject))
 					[
-						SNew(SBox)
-						.WidthOverride(64)
-						.HeightOverride(64)
-						.ToolTipText(FText::FromString(InstancedObject->GetPathName()))
+						SAssignNew(ThumbnailBorder, SBorder)
+						.Padding(5.0f)
+						.OnMouseDoubleClick(this, &FHoudiniOutputDetails::OnThumbnailDoubleClick, TWeakObjectPtr<UObject>(InstancedObject))
 						[
-							VariationThumbnail->MakeThumbnailWidget()
+							SNew(SBox)
+								.WidthOverride(64)
+								.HeightOverride(64)
+								.ToolTipText(FText::FromString(InstancedObject->GetPathName()))
+								[
+									Thumbnail->MakeThumbnailWidget()
+								]
 						]
-					]
-				];
+					];
 
-				TWeakPtr<SBorder> WeakVariationThumbnailBorder(VariationThumbnailBorder);
-				VariationThumbnailBorder->SetBorderImage(TAttribute< const FSlateBrush *>::Create(
-					TAttribute<const FSlateBrush *>::FGetter::CreateLambda([WeakVariationThumbnailBorder]()
-					{
-						TSharedPtr<SBorder> ThumbnailBorder = WeakVariationThumbnailBorder.Pin();
-						if (ThumbnailBorder.IsValid() && ThumbnailBorder->IsHovered())
-							return _GetEditorStyle().GetBrush("PropertyEditor.AssetThumbnailLight");
-						else
-							return _GetEditorStyle().GetBrush("PropertyEditor.AssetThumbnailShadow");
-					}
-				)));
+				// Create tooltip.
+				FFormatNamedArguments Args;
+				Args.Add(TEXT("Asset"), FText::FromString(InstancedObject->GetName()));
+				FText Tooltip =
+					FText::Format(LOCTEXT("BrowseToSpecificAssetInContentBrowser", "Browse to '{Asset}' in Content Browser"), Args);
 
-				PickerHorizontalBox->AddSlot().AutoWidth().Padding(0.0f, 28.0f, 0.0f, 28.0f)
-				[
-					PropertyCustomizationHelpers::MakeAddButton(
-						FSimpleDelegate::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx, AddObjectAt]()
-						{
-							FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-							if (!InstanceOutput)
-								return;
-							
-							UObject* ObjToAdd = InstanceOutput->VariationObjects.IsValidIndex(VariationIdx) ?
-								InstanceOutput->VariationObjects[VariationIdx].LoadSynchronous()
-								: nullptr;
-
-							return AddObjectAt(*InstanceOutput, VariationIdx, ObjToAdd);
-						}),
-						LOCTEXT("AddAnotherInstanceToolTip", "Add Another Instance"))
-				];
-
-				PickerHorizontalBox->AddSlot().AutoWidth().Padding( 2.0f, 28.0f, 4.0f, 28.0f )
-				[
-					PropertyCustomizationHelpers::MakeRemoveButton(
-						FSimpleDelegate::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx, RemoveObjectAt]()
-						{
-							FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-							if (!InstanceOutput)
-								return;
-
-							return RemoveObjectAt(*InstanceOutput, VariationIdx);
-						}),
-						LOCTEXT("RemoveLastInstanceToolTip", "Remove Last Instance"))
-				];
-
-				TSharedPtr<SComboButton> AssetComboButton;
-				TSharedPtr<SHorizontalBox> ButtonBox;
 				PickerHorizontalBox->AddSlot()
-				.FillWidth(1.0f)
-				.Padding(0.0f, 4.0f, 4.0f, 4.0f)
-				.VAlign(VAlign_Center)
-				[
-					SNew(SVerticalBox)
-					+SVerticalBox::Slot()
-					.HAlign(HAlign_Fill)
+					.AutoWidth()
+					.Padding(2.0f, 0.0f)
+					.VAlign(VAlign_Center)
 					[
-						SAssignNew(ButtonBox, SHorizontalBox)
-						+SHorizontalBox::Slot()
-						[
-							SAssignNew(AssetComboButton, SComboButton)
-							//.ToolTipText( this, &FHoudiniAssetComponentDetails::OnGetToolTip )
-							.ButtonStyle(_GetEditorStyle(), "PropertyEditor.AssetComboStyle")
-							.ForegroundColor(_GetEditorStyle().GetColor( "PropertyEditor.AssetName.ColorAndOpacity" ) )
-							/* TODO: Update UI
-							.OnMenuOpenChanged( FOnIsOpenChanged::CreateUObject(
-								&InParam, &UHoudiniAssetInstanceInput::ChangedStaticMeshComboButton,
-								CurInstanceOutput, InstOutIdx, VariationIdx ) )
-								*/
-							.ContentPadding(2.0f)
-							.ButtonContent()
-							[
-								SNew(STextBlock)
-								.TextStyle(_GetEditorStyle(), "PropertyEditor.AssetClass")
-								.Font(_GetEditorStyle().GetFontStyle(FName(TEXT("PropertyWindow.NormalFont"))))
-								.Text(FText::FromString(InstancedObject->GetName()))
-							]
-						]
-					]
-				];
-
-				// Create asset picker for this combo button.
-				{
-					TWeakPtr<SComboButton> WeakAssetComboButton(AssetComboButton);
-					TArray<UFactory *> NewAssetFactories;
-					TSharedRef<SWidget> PropertyMenuAssetPicker = PropertyCustomizationHelpers::MakeAssetPickerWithMenu(
-						FAssetData(InstancedObject),
-						true,
-						AllowedClasses,
-						DisallowedClasses,
-						NewAssetFactories,
-						FOnShouldFilterAsset(),
-						FOnAssetSelected::CreateLambda(
-							[InOutput, CurOutputObjectIdentifier, VariationIdx, SetObjectAt, WeakAssetComboButton](const FAssetData& AssetData)
+						PropertyCustomizationHelpers::MakeBrowseButton(
+							FSimpleDelegate::CreateLambda([InOutput, CurOutputObjectIdentifier]()
 							{
 								FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
 								if (!InstanceOutput)
 									return;
 
-								TSharedPtr<SComboButton> AssetComboButtonPtr = WeakAssetComboButton.Pin();
-								if (AssetComboButtonPtr.IsValid())
+								UObject* InputObject = InstanceOutput->OriginalObject.LoadSynchronous();
+
+								if (GEditor && InputObject)
 								{
-									AssetComboButtonPtr->SetIsOpen(false);
-									UObject * Object = AssetData.GetAsset();
-									SetObjectAt(*InstanceOutput, VariationIdx, Object);
+									TArray<UObject*> Objects;
+									Objects.Add(InputObject);
+									GEditor->SyncBrowserToObjects(Objects);
 								}
-							}
-						),
-						// Nothing to do on close
-						FSimpleDelegate::CreateLambda([](){})
-					);
+							}),
+							TAttribute< FText >(Tooltip))
+					];
 
-					AssetComboButton->SetMenuContent(PropertyMenuAssetPicker);
-				}
+			}
+			else
+			{
+				FString DeprecatedWarning = TEXT("WARNING: INSTANCE VARIATIONS ARE DEPCRECATED AND WILL BE REMOVED IN THE NEXT VERSION");
 
-				// Create tooltip.
-				FFormatNamedArguments Args;
-				Args.Add(TEXT("Asset"), FText::FromString(InstancedObject->GetName()));
-				FText StaticMeshTooltip =
-					FText::Format(LOCTEXT( "BrowseToSpecificAssetInContentBrowser", "Browse to '{Asset}' in Content Browser" ), Args);
+				InstancerGroup.AddWidgetRow()
+					.NameContent()
+					[
+						//SNew(SSpacer)
+						SNew(STextBlock)
+						.TextStyle(_GetEditorStyle(), "PropertyEditor.AssetClass")
+						.Font(_GetEditorStyle().GetFontStyle(FName(TEXT("PropertyWindow.NormalFont"))))
+						.Text(FText::FromString(DeprecatedWarning))
+						.ColorAndOpacity(FLinearColor::Red) 
+						.AutoWrapText(true)
+					];
 
-				ButtonBox->AddSlot()
-				.AutoWidth()
-				.Padding(2.0f, 0.0f)
-				.VAlign(VAlign_Center)
-				[
-					PropertyCustomizationHelpers::MakeBrowseButton(
-						FSimpleDelegate::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
+				for( int32 VariationIdx = 0; VariationIdx < CurInstanceOutput.VariationObjects.Num(); VariationIdx++ )
+				{
+					UObject * InstancedObject = CurInstanceOutput.VariationObjects[VariationIdx].LoadSynchronous();
+					if ( !IsValid(InstancedObject) )
+					{
+						HOUDINI_LOG_WARNING( TEXT("Null Object found for instance variation %d"), VariationIdx );
+						continue;
+					}
+
+					// Create thumbnail for this object.
+					TSharedPtr<FAssetThumbnail> VariationThumbnail =
+						MakeShareable(new FAssetThumbnail(InstancedObject, 64, 64, AssetThumbnailPool));
+					TSharedRef<SVerticalBox> PickerVerticalBox = SNew(SVerticalBox);
+					TSharedPtr<SHorizontalBox> PickerHorizontalBox = nullptr;
+					TSharedPtr<SBorder> VariationThumbnailBorder;
+
+					// For the variation name, reuse the instancer label and append the variation index if we have more than one variation
+					FString InstanceOutputLabel = InstancerLabel;
+					if(CurInstanceOutput.VariationObjects.Num() > 1)
+						InstanceOutputLabel += TEXT(" [") + FString::FromInt(VariationIdx) + TEXT("]");
+
+					IDetailGroup* DetailGroup = &InstancerGroup;
+					if (CurInstanceOutput.VariationObjects.Num() > 1)
+					{
+						// If we have more than one variation, add a new group for each variation
+						DetailGroup = &InstancerGroup.AddGroup(FName(*InstanceOutputLabel), FText::FromString(InstanceOutputLabel), true);
+					}
+
+					// See if we can find the corresponding component to get its type
+					FString InstancerType = TEXT("(Instancer)"); 
+					FHoudiniOutputObjectIdentifier CurVariationIdentifier = CurOutputObjectIdentifier;
+					CurVariationIdentifier.SplitIdentifier += TEXT("_") + FString::FromInt(VariationIdx);
+					const FHoudiniOutputObject* VariationOutputObject = OutputObjects.Find(CurVariationIdentifier);
+					if(VariationOutputObject && VariationOutputObject->OutputComponents.Num() > 0)
+						InstancerType = FHoudiniInstanceTranslator::GetInstancerTypeFromComponent(VariationOutputObject->OutputComponents[0]);
+
+					FString VariationLabel = TEXT(" [") + CurVariationIdentifier.SplitIdentifier + TEXT("] ") + InstancerType;
+					DetailGroup->AddWidgetRow()
+					.NameContent()
+					[
+						//SNew(SSpacer)
+						SNew(STextBlock)
+						.TextStyle(_GetEditorStyle(), "PropertyEditor.AssetClass")
+						.Font(_GetEditorStyle().GetFontStyle(FName(TEXT("PropertyWindow.NormalFont"))))
+						.Text(FText::FromString(VariationLabel))
+						//.Size(FVector2D(250, 64))
+					]
+					.ValueContent()
+					.MinDesiredWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
+					[
+						PickerVerticalBox
+					];
+
+					// Add an asset drop target
+					PickerVerticalBox->AddSlot()
+					.Padding(0, 2)
+					.AutoHeight()
+					[
+						SNew(SAssetDropTarget)
+						.OnAreAssetsAcceptableForDrop(SAssetDropTarget::FAreAssetsAcceptableForDrop::CreateLambda(
+							[DisallowedClasses](TArrayView<FAssetData> InAssets)
+							{
+								UObject* Obj = InAssets[0].GetAsset();
+								for (auto Klass : DisallowedClasses)
+								{
+									if (Obj && Obj->IsA(Klass))
+										return false;
+								}
+								return true;
+							})
+						)
+						.OnAssetsDropped_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, SetObjectAt](const FDragDropEvent&, TArrayView<FAssetData> InAssets)
 						{
 							FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
 							if (!InstanceOutput)
 								return;
 							
-							UObject* InputObject = InstanceOutput->VariationObjects.IsValidIndex(VariationIdx) ?
-								InstanceOutput->VariationObjects[VariationIdx].LoadSynchronous()
-								: nullptr;
+							return SetObjectAt(*InstanceOutput, VariationIdx, InAssets[0].GetAsset());
+						})
+						[
+							SAssignNew(PickerHorizontalBox, SHorizontalBox)
+						]
+					];
 
-							if (GEditor && InputObject)
-							{
-								TArray<UObject*> Objects;
-								Objects.Add(InputObject);
-								GEditor->SyncBrowserToObjects(Objects);
-							}
-						}),
-						TAttribute< FText >( StaticMeshTooltip ) )
-				];
+					PickerHorizontalBox->AddSlot().Padding(0.0f, 0.0f, 2.0f, 0.0f).AutoWidth()
+					[
+						SAssignNew(VariationThumbnailBorder, SBorder)
+						.Padding( 5.0f )
+						.OnMouseDoubleClick(this, &FHoudiniOutputDetails::OnThumbnailDoubleClick, TWeakObjectPtr<UObject>(InstancedObject))
+						[
+							SNew(SBox)
+							.WidthOverride(64)
+							.HeightOverride(64)
+							.ToolTipText(FText::FromString(InstancedObject->GetPathName()))
+							[
+								VariationThumbnail->MakeThumbnailWidget()
+							]
+						]
+					];
 
-				ButtonBox->AddSlot()
-				.AutoWidth()
-				.Padding(2.0f, 0.0f )
-				.VAlign(VAlign_Center)
-				[
-					SNew(SButton)
-					.ToolTipText(LOCTEXT( "ResetToBase", "Reset to default static mesh"))
-					.ButtonStyle(_GetEditorStyle(), "NoBorder")
-					.ContentPadding(0)
-					.Visibility(EVisibility::Visible)
-					.OnClicked_Lambda([SetObjectAt, InOutput, CurOutputObjectIdentifier, VariationIdx]()
+					TWeakPtr<SBorder> WeakVariationThumbnailBorder(VariationThumbnailBorder);
+					VariationThumbnailBorder->SetBorderImage(TAttribute< const FSlateBrush *>::Create(
+						TAttribute<const FSlateBrush *>::FGetter::CreateLambda([WeakVariationThumbnailBorder]()
+						{
+							TSharedPtr<SBorder> ThumbnailBorder = WeakVariationThumbnailBorder.Pin();
+							if (ThumbnailBorder.IsValid() && ThumbnailBorder->IsHovered())
+								return _GetEditorStyle().GetBrush("PropertyEditor.AssetThumbnailLight");
+							else
+								return _GetEditorStyle().GetBrush("PropertyEditor.AssetThumbnailShadow");
+						}
+					)));
+
+						PickerHorizontalBox->AddSlot().AutoWidth().Padding(0.0f, 28.0f, 0.0f, 28.0f)
+						[
+							PropertyCustomizationHelpers::MakeAddButton(
+								FSimpleDelegate::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx, AddObjectAt]()
+								{
+									FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+									if (!InstanceOutput)
+										return;
+									
+									UObject* ObjToAdd = InstanceOutput->VariationObjects.IsValidIndex(VariationIdx) ?
+										InstanceOutput->VariationObjects[VariationIdx].LoadSynchronous()
+										: nullptr;
+
+									return AddObjectAt(*InstanceOutput, VariationIdx, ObjToAdd);
+								}),
+								LOCTEXT("AddAnotherInstanceToolTip", "Add Another Instance"))
+						];
+
+						PickerHorizontalBox->AddSlot().AutoWidth().Padding( 2.0f, 28.0f, 4.0f, 28.0f )
+						[
+							PropertyCustomizationHelpers::MakeRemoveButton(
+								FSimpleDelegate::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx, RemoveObjectAt]()
+								{
+									FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+									if (!InstanceOutput)
+										return;
+
+									return RemoveObjectAt(*InstanceOutput, VariationIdx);
+								}),
+								LOCTEXT("RemoveLastInstanceToolTip", "Remove Last Instance"))
+						];
+
+					TSharedPtr<SComboButton> AssetComboButton;
+					TSharedPtr<SHorizontalBox> ButtonBox;
+						PickerHorizontalBox->AddSlot()
+						.FillWidth(1.0f)
+						.Padding(0.0f, 4.0f, 4.0f, 4.0f)
+						.VAlign(VAlign_Center)
+						[
+							SNew(SVerticalBox)
+							+SVerticalBox::Slot()
+							.HAlign(HAlign_Fill)
+							[
+								SAssignNew(ButtonBox, SHorizontalBox)
+								+SHorizontalBox::Slot()
+								[
+									SAssignNew(AssetComboButton, SComboButton)
+									//.ToolTipText( this, &FHoudiniAssetComponentDetails::OnGetToolTip )
+									.ButtonStyle(_GetEditorStyle(), "PropertyEditor.AssetComboStyle")
+									.ForegroundColor(_GetEditorStyle().GetColor( "PropertyEditor.AssetName.ColorAndOpacity" ) )
+								/* TODO: Update UI
+								.OnMenuOpenChanged( FOnIsOpenChanged::CreateUObject(
+									&InParam, &UHoudiniAssetInstanceInput::ChangedStaticMeshComboButton,
+									CurInstanceOutput, InstOutIdx, VariationIdx ) )
+									*/
+									.ContentPadding(2.0f)
+									.ButtonContent()
+									[
+										SNew(STextBlock)
+										.TextStyle(_GetEditorStyle(), "PropertyEditor.AssetClass")
+										.Font(_GetEditorStyle().GetFontStyle(FName(TEXT("PropertyWindow.NormalFont"))))
+										.Text(FText::FromString(InstancedObject->GetName()))
+									]
+								]
+							]
+						];
+
+						// Create asset picker for this combo button.
+						{
+							TWeakPtr<SComboButton> WeakAssetComboButton(AssetComboButton);
+							TArray<UFactory *> NewAssetFactories;
+							TSharedRef<SWidget> PropertyMenuAssetPicker = PropertyCustomizationHelpers::MakeAssetPickerWithMenu(
+								FAssetData(InstancedObject),
+								true,
+								AllowedClasses,
+								DisallowedClasses,
+								NewAssetFactories,
+								FOnShouldFilterAsset(),
+								FOnAssetSelected::CreateLambda(
+									[InOutput, CurOutputObjectIdentifier, VariationIdx, SetObjectAt, WeakAssetComboButton](const FAssetData& AssetData)
+									{
+										FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+										if (!InstanceOutput)
+											return;
+
+										TSharedPtr<SComboButton> AssetComboButtonPtr = WeakAssetComboButton.Pin();
+										if (AssetComboButtonPtr.IsValid())
+										{
+											AssetComboButtonPtr->SetIsOpen(false);
+											UObject * Object = AssetData.GetAsset();
+											SetObjectAt(*InstanceOutput, VariationIdx, Object);
+										}
+									}
+								),
+								// Nothing to do on close
+								FSimpleDelegate::CreateLambda([](){})
+							);
+
+							AssetComboButton->SetMenuContent(PropertyMenuAssetPicker);
+						}
+
+						// Create tooltip.
+						FFormatNamedArguments Args;
+						Args.Add(TEXT("Asset"), FText::FromString(InstancedObject->GetName()));
+						FText StaticMeshTooltip =
+							FText::Format(LOCTEXT("BrowseToSpecificAssetInContentBrowser", "Browse to '{Asset}' in Content Browser"), Args);
+
+						ButtonBox->AddSlot()
+							.AutoWidth()
+							.Padding(2.0f, 0.0f)
+							.VAlign(VAlign_Center)
+							[
+								PropertyCustomizationHelpers::MakeBrowseButton(
+									FSimpleDelegate::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
+										{
+											FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+											if (!InstanceOutput)
+												return;
+
+											UObject* InputObject = InstanceOutput->VariationObjects.IsValidIndex(VariationIdx) ?
+												InstanceOutput->VariationObjects[VariationIdx].LoadSynchronous()
+												: nullptr;
+
+											if (GEditor && InputObject)
+											{
+												TArray<UObject*> Objects;
+												Objects.Add(InputObject);
+												GEditor->SyncBrowserToObjects(Objects);
+											}
+										}),
+									TAttribute< FText >(StaticMeshTooltip))
+							];
+
+						ButtonBox->AddSlot()
+							.AutoWidth()
+							.Padding(2.0f, 0.0f)
+							.VAlign(VAlign_Center)
+							[
+								SNew(SButton)
+								.ToolTipText(LOCTEXT("ResetToBase", "Reset to default static mesh"))
+							.ButtonStyle(_GetEditorStyle(), "NoBorder")
+							.ContentPadding(0)
+							.Visibility(EVisibility::Visible)
+							.OnClicked_Lambda([SetObjectAt, InOutput, CurOutputObjectIdentifier, VariationIdx]()
+								{
+									FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+									if (!InstanceOutput)
+										return FReply::Handled();
+
+									SetObjectAt(*InstanceOutput, VariationIdx, InstanceOutput->OriginalObject.LoadSynchronous());
+									return FReply::Handled();
+								})
+							[
+								SNew(SImage)
+								.Image(_GetEditorStyle().GetBrush("PropertyWindow.DiffersFromDefault"))
+							]
+						];
+
+
+					// Get Visibility of reset buttons
+					bool bResetButtonVisiblePosition = false;
+					bool bResetButtonVisibleRotation = false;
+					bool bResetButtonVisibleScale = false;
+
+					FTransform CurTransform = CurInstanceOutput.VariationTransformOffsets[VariationIdx];
+
+					if (CurTransform.GetLocation() != FVector3d::ZeroVector)
+						bResetButtonVisiblePosition = true;
+
+					FRotator Rotator = CurTransform.Rotator();
+					if (Rotator.Roll != 0 || Rotator.Pitch != 0 || Rotator.Yaw != 0)
+						bResetButtonVisibleRotation = true;
+
+					if (CurTransform.GetScale3D() != FVector3d::OneVector)
+						bResetButtonVisibleScale = true;
+					
+					auto ChangeTransformOffsetUniformlyAt = [ChangeTransformOffsetAt, VariationIdx, InOutput, CurOutputObjectIdentifier](const float& Val, const int32& PosRotScaleIndex)
 					{
 						FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
 						if (!InstanceOutput)
-							return FReply::Handled();
+							return;
 
-						SetObjectAt(*InstanceOutput, VariationIdx, InstanceOutput->OriginalObject.LoadSynchronous());
-						return FReply::Handled();
-					})
+						ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, PosRotScaleIndex, 0);
+						ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, PosRotScaleIndex, 1);
+						ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, PosRotScaleIndex, 2);
+					};
+
+					TSharedRef<SVerticalBox> OffsetVerticalBox = SNew(SVerticalBox);
+					FText LabelPositionText = LOCTEXT("HoudiniPositionOffset", "Position Offset");
+					DetailGroup->AddWidgetRow()
+					.NameContent()
 					[
-						SNew(SImage)
-						.Image(_GetEditorStyle().GetBrush("PropertyWindow.DiffersFromDefault"))
+						SNew(STextBlock)
+						.Text(LabelPositionText)
+						.ToolTipText(LabelPositionText)
+						.Font(_GetEditorStyle().GetFontStyle(TEXT("PropertyWindow.NormalFont")))
 					]
-				];
-
-
-				// Get Visibility of reset buttons
-				bool bResetButtonVisiblePosition = false;
-				bool bResetButtonVisibleRotation = false;
-				bool bResetButtonVisibleScale = false;
-
-				FTransform CurTransform = CurInstanceOutput.VariationTransformOffsets[VariationIdx];
-
-				if (CurTransform.GetLocation() != FVector3d::ZeroVector)
-					bResetButtonVisiblePosition = true;
-
-				FRotator Rotator = CurTransform.Rotator();
-				if (Rotator.Roll != 0 || Rotator.Pitch != 0 || Rotator.Yaw != 0)
-					bResetButtonVisibleRotation = true;
-
-				if (CurTransform.GetScale3D() != FVector3d::OneVector)
-					bResetButtonVisibleScale = true;
-				
-				auto ChangeTransformOffsetUniformlyAt = [ChangeTransformOffsetAt, VariationIdx, InOutput, CurOutputObjectIdentifier](const float& Val, const int32& PosRotScaleIndex)
-				{
-					FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-					if (!InstanceOutput)
-						return;
-
-					ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, PosRotScaleIndex, 0);
-					ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, PosRotScaleIndex, 1);
-					ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, PosRotScaleIndex, 2);
-				};
-
-				TSharedRef<SVerticalBox> OffsetVerticalBox = SNew(SVerticalBox);
-				FText LabelPositionText = LOCTEXT("HoudiniPositionOffset", "Position Offset");
-				DetailGroup->AddWidgetRow()
-				.NameContent()
-				[
-					SNew(STextBlock)
-					.Text(LabelPositionText)
-					.ToolTipText(LabelPositionText)
-					.Font(_GetEditorStyle().GetFontStyle(TEXT("PropertyWindow.NormalFont")))
-				]
-				.ValueContent()
-				.MinDesiredWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot().MaxWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
+					.ValueContent()
+					.MinDesiredWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
 					[
-						SNew(SVectorInputBox)
-						.bColorAxisLabels(true)
-						.AllowSpin(true)
-						.X(TAttribute<TOptional<float>>::Create(
-							TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
-							{
-								FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-								if (!InstanceOutput)
-									return 0.0f;
-								return InstanceOutput->GetTransformOffsetAt(VariationIdx, 0, 0);
-							}
-						)))
-						.Y(TAttribute<TOptional<float>>::Create(
-							TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
-							{
-								FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-								if (!InstanceOutput)
-									return 0.0f;
-								return InstanceOutput->GetTransformOffsetAt(VariationIdx, 0, 1);
-							}
-						)))
-						.Z(TAttribute<TOptional<float>>::Create(
-							TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
-							{
-								FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-								if (!InstanceOutput)
-									return 0.0f;
-								return InstanceOutput->GetTransformOffsetAt(VariationIdx, 0, 2);
-							}
-						)))
-						.OnXCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt](float Val, ETextCommit::Type TextCommitType)
-						{
-							FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-							if (!InstanceOutput)
-								return;
-							ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 0, 0);
-						})	
-						.OnYCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt](float Val, ETextCommit::Type TextCommitType)
-						{
-							FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-							if (!InstanceOutput)
-								return;
-							ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 0, 1);
-						})
-						.OnZCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt](float Val, ETextCommit::Type TextCommitType)
-						{
-							FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-							if (!InstanceOutput)
-								return;
-							ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 0, 2);
-						})
-					]
-
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.HAlign(HAlign_Right)
-					[
-						// Lock Button (not visible)
 						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().AutoWidth().HAlign(HAlign_Right).VAlign(VAlign_Center).Padding(0.0f)
+						+ SHorizontalBox::Slot().MaxWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
 						[
-							SNew(SButton)
-							.ButtonStyle(_GetEditorStyle(), "NoBorder")
-							.ClickMethod(EButtonClickMethod::MouseDown)
-							.Visibility(EVisibility::Hidden)
-							[
-								SNew(SImage)
-								.Image(_GetEditorStyle().GetBrush("GenericLock"))
-							]
-						]
-						// Reset Button
-						+ SHorizontalBox::Slot().AutoWidth().HAlign(HAlign_Left).VAlign(VAlign_Center).Padding(0.0f)
-						[
-							SNew(SButton)
-							.ButtonStyle(_GetEditorStyle(), "NoBorder")
-							.ClickMethod(EButtonClickMethod::MouseDown)
-							.ToolTipText(LOCTEXT("InstancerOutputResetButtonToolTip", "Reset To Default"))
-							.Visibility(bResetButtonVisiblePosition ? EVisibility::Visible : EVisibility::Hidden)
-							[
-								SNew(SImage)
-								.Image(_GetEditorStyle().GetBrush("PropertyWindow.DiffersFromDefault"))
-							]
-							.OnClicked_Lambda([ChangeTransformOffsetUniformlyAt, CurInstanceOutput, InOutput]()
-							{
-								ChangeTransformOffsetUniformlyAt(0.0f, 0);
-								FHoudiniEngineUtils::UpdateEditorProperties(InOutput->GetOuter(), true);
-								return FReply::Handled();
-							})
-						]
-					]
-				];
-
-				FText LabelRotationText = LOCTEXT("HoudiniRotationOffset", "Rotation Offset");
-				DetailGroup->AddWidgetRow()
-				.NameContent()
-				[
-					SNew(STextBlock)
-					.Text(LabelRotationText)
-					.ToolTipText(LabelRotationText)
-					.Font(_GetEditorStyle().GetFontStyle(TEXT("PropertyWindow.NormalFont")))
-				]
-				.ValueContent()
-				.MinDesiredWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot().MaxWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
-					[
-						SNew(SRotatorInputBox)
-						.AllowSpin(true)
-						.bColorAxisLabels(true)                    
-						.Roll(TAttribute<TOptional<float>>::Create(
-							TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
-							{
-								FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-								if (!InstanceOutput)
-									return 0.0f;
-								return InstanceOutput->GetTransformOffsetAt(VariationIdx, 1, 0);
-							}
-						)))
-						.Pitch(TAttribute<TOptional<float>>::Create(
-							TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
-							{
-								FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-								if (!InstanceOutput)
-									return 0.0f;
-								return InstanceOutput->GetTransformOffsetAt(VariationIdx, 1, 1);
-							}
-						)))
-						.Yaw(TAttribute<TOptional<float>>::Create(
-							TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
-							{
-								FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-								if (!InstanceOutput)
-									return 0.0f;
-								return InstanceOutput->GetTransformOffsetAt(VariationIdx, 1, 2);
-							}
-						)))
-						.OnRollCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt](float Val, ETextCommit::Type TextCommitType)
-						{
-							FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-							if (!InstanceOutput)
-								return;
-							ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 1, 0);
-						})	
-						.OnPitchCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt](float Val, ETextCommit::Type TextCommitType)
-						{
-							FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-							if (!InstanceOutput)
-								return;
-							ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 1, 1);
-						})
-						.OnYawCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt](float Val, ETextCommit::Type TextCommitType)
-						{
-							FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-							if (!InstanceOutput)
-								return;
-							ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 1, 2);
-						})
-					]
-
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.HAlign(HAlign_Right)
-					[
-						// Lock Button (not visible)
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().AutoWidth().HAlign(HAlign_Right).VAlign(VAlign_Center).Padding(0.0f)
-						[
-							SNew(SButton)
-							.ButtonStyle(_GetEditorStyle(), "NoBorder")
-							.ClickMethod(EButtonClickMethod::MouseDown)
-							.Visibility(EVisibility::Hidden)
-							[
-								SNew(SImage)
-								.Image(_GetEditorStyle().GetBrush("GenericLock"))
-							]
-						]
-						// Reset Button
-						+ SHorizontalBox::Slot().AutoWidth().HAlign(HAlign_Left).VAlign(VAlign_Center).Padding(0.0f)
-						[
-							SNew(SButton)
-							.ButtonStyle(_GetEditorStyle(), "NoBorder")
-							.ClickMethod(EButtonClickMethod::MouseDown)
-							.ToolTipText(LOCTEXT("GeoInputResetButtonToolTip", "Reset To Default"))
-							.Visibility(bResetButtonVisibleRotation ? EVisibility::Visible : EVisibility::Hidden)
-							[
-								SNew(SImage)
-								.Image(_GetEditorStyle().GetBrush("PropertyWindow.DiffersFromDefault"))
-							]
-							.OnClicked_Lambda([ChangeTransformOffsetUniformlyAt, InOutput]()
-							{
-								ChangeTransformOffsetUniformlyAt(0.0f, 1);
-								FHoudiniEngineUtils::UpdateEditorProperties(InOutput->GetOuter(), true);
-								return FReply::Handled();
-							})
-						]
-					]
-				];
-
-				FText LabelScaleText = LOCTEXT("HoudiniScaleOffset", "Scale Offset");
-				DetailGroup->AddWidgetRow()
-				.NameContent()
-				[
-					SNew(STextBlock)
-					.Text(LabelScaleText)
-					.ToolTipText(LabelScaleText)
-					.Font(_GetEditorStyle().GetFontStyle(TEXT("PropertyWindow.NormalFont")))
-				]
-				.ValueContent()
-				.MinDesiredWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
-				[
-					SNew(SHorizontalBox)
-					+ SHorizontalBox::Slot().MaxWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
-					[
-						SNew(SVectorInputBox)
-						.bColorAxisLabels(true)
-						.X(TAttribute<TOptional<float>>::Create(
-							TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
-								{ 
-									FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-									if (!InstanceOutput)
-										return 1.0f;
-									return InstanceOutput->GetTransformOffsetAt(VariationIdx, 2, 0); 
-								}
-						)))
-						.Y(TAttribute<TOptional<float>>::Create(
-							TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
-								{ 
-									FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-									if (!InstanceOutput)
-										return 1.0f;
-									return InstanceOutput->GetTransformOffsetAt(VariationIdx, 2, 1); 
-								}
-						)))
-						.Z(TAttribute<TOptional<float>>::Create(
-							TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
-								{ 
-									FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-									if (!InstanceOutput)
-										return 1.0f;
-									return InstanceOutput->GetTransformOffsetAt(VariationIdx, 2, 2); 
-								}
-						)))
-						.OnXCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt, ChangeTransformOffsetUniformlyAt](float Val, ETextCommit::Type TextCommitType)
-						{
-							FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-							if (!InstanceOutput)
-								return;
-							if (InstanceOutput->IsUnformScaleLocked())
-								ChangeTransformOffsetUniformlyAt(Val, 2);
-							else
-								ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 2, 0); 
-						})	
-						.OnYCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt, ChangeTransformOffsetUniformlyAt](float Val, ETextCommit::Type TextCommitType)
-						{
-							FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-							if (!InstanceOutput)
-								return;
-							if (InstanceOutput->IsUnformScaleLocked())
-								ChangeTransformOffsetUniformlyAt(Val, 2);
-							else
-								ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 2, 1); 
-						})
-						.OnZCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt, ChangeTransformOffsetUniformlyAt](float Val, ETextCommit::Type TextCommitType)
-						{
-							FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-							if (!InstanceOutput)
-								return;
-							if (InstanceOutput->IsUnformScaleLocked())
-								ChangeTransformOffsetUniformlyAt(Val, 2);
-							else
-								ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 2, 2);
-						})
-					]
-
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.HAlign(HAlign_Right)
-					[
-						// Lock Button
-						SNew(SHorizontalBox)
-						+ SHorizontalBox::Slot().AutoWidth().HAlign(HAlign_Right).VAlign(VAlign_Center).Padding(0.0f)
-						[
-							SNew(SButton)
-							.ButtonStyle(_GetEditorStyle(), "NoBorder")
-							.ClickMethod(EButtonClickMethod::MouseDown)
-							.ToolTipText(LOCTEXT("InstancerOutputLockButtonToolTip", "When locked, scales uniformly based on the current xyz scale values so the output object maintains its shape in each direction when scaled"))
-							.Visibility(EVisibility::Visible)
-							[
-								SNew(SImage)
-								.Image(CurInstanceOutput.IsUnformScaleLocked() ? _GetEditorStyle().GetBrush("GenericLock") : _GetEditorStyle().GetBrush("GenericUnlock"))
-							]
-							.OnClicked_Lambda([InOutput, CurOutputObjectIdentifier]() 
-							{
-								FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
-								if (!InstanceOutput)
-									return FReply::Handled();
-								
-								InstanceOutput->SwitchUniformScaleLock();
-								
-								FHoudiniEngineUtils::UpdateEditorProperties(InOutput->GetOuter(), true);
-								return FReply::Handled();
-							})
-						]
-						// Reset Button
-						+ SHorizontalBox::Slot().AutoWidth().HAlign(HAlign_Left).VAlign(VAlign_Center).Padding(0.0f)
-						[
-							SNew(SButton)
-							.ButtonStyle(_GetEditorStyle(), "NoBorder")
-							.ClickMethod(EButtonClickMethod::MouseDown)
-							.ToolTipText(LOCTEXT("GeoInputResetButtonToolTip", "Reset To Default"))
-							.Visibility(bResetButtonVisibleScale ? EVisibility::Visible : EVisibility::Hidden)
-							[
-								SNew(SImage)
-								.Image(_GetEditorStyle().GetBrush("PropertyWindow.DiffersFromDefault"))
-							]
-							.OnClicked_Lambda([ChangeTransformOffsetUniformlyAt, InOutput]()
-							{
-								ChangeTransformOffsetUniformlyAt(1.0f, 2);
-								FHoudiniEngineUtils::UpdateEditorProperties(InOutput->GetOuter(), true);
-								return FReply::Handled();
-							})
-						]
-					]
-					/*
-					// TODO: Add support for this back
-					+ SHorizontalBox::Slot().AutoWidth()
-					[
-						// Add a checkbox to toggle between preserving the ratio of x,y,z components of scale when a value is entered
-						SNew(SCheckBox)
-						.Style(_GetEditorStyle(), "TransparentCheckBox")
-						.ToolTipText(LOCTEXT("PreserveScaleToolTip", "When locked, scales uniformly based on the current xyz scale values so the object maintains its shape in each direction when scaled"))
-						*//*
-						.OnCheckStateChanged(FOnCheckStateChanged::CreateLambda([=](ECheckBoxState NewState)
-						{
-							if ( MyParam.IsValid() && InputFieldPtr.IsValid() )
-								MyParam->CheckStateChanged( NewState == ECheckBoxState::Checked, InputFieldPtr.Get(), VariationIdx );
-						}))
-						.IsChecked( TAttribute< ECheckBoxState >::Create(
-							TAttribute<ECheckBoxState>::FGetter::CreateLambda( [=]() 
-							{
-								if (InputFieldPtr.IsValid() && InputFieldPtr->AreOffsetsScaledLinearly(VariationIdx))
-									return ECheckBoxState::Checked;
-								return ECheckBoxState::Unchecked;
-							}
-						)))
-						*//*
-						[
-							SNew(SImage)
-							*//*.Image(TAttribute<const FSlateBrush*>::Create(
-								TAttribute<const FSlateBrush*>::FGetter::CreateLambda( [=]() 
+							SNew(SVectorInputBox)
+							.bColorAxisLabels(true)
+							.AllowSpin(true)
+							.X(TAttribute<TOptional<float>>::Create(
+								TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
 								{
-									if ( InputFieldPtr.IsValid() && InputFieldPtr->AreOffsetsScaledLinearly( VariationIdx ) )
-									{
-										return FEditorStyle::GetBrush( TEXT( "GenericLock" ) );
+									FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+									if (!InstanceOutput)
+										return 0.0f;
+									return InstanceOutput->GetTransformOffsetAt(VariationIdx, 0, 0);
+								}
+							)))
+							.Y(TAttribute<TOptional<float>>::Create(
+								TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
+								{
+									FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+									if (!InstanceOutput)
+										return 0.0f;
+									return InstanceOutput->GetTransformOffsetAt(VariationIdx, 0, 1);
+								}
+							)))
+							.Z(TAttribute<TOptional<float>>::Create(
+								TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
+								{
+									FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+									if (!InstanceOutput)
+										return 0.0f;
+									return InstanceOutput->GetTransformOffsetAt(VariationIdx, 0, 2);
+								}
+							)))
+							.OnXCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt](float Val, ETextCommit::Type TextCommitType)
+							{
+								FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+								if (!InstanceOutput)
+									return;
+								ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 0, 0);
+							})	
+							.OnYCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt](float Val, ETextCommit::Type TextCommitType)
+							{
+								FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+								if (!InstanceOutput)
+									return;
+								ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 0, 1);
+							})
+							.OnZCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt](float Val, ETextCommit::Type TextCommitType)
+							{
+								FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+								if (!InstanceOutput)
+									return;
+								ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 0, 2);
+							})
+						]
+
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.HAlign(HAlign_Right)
+						[
+							// Lock Button (not visible)
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().AutoWidth().HAlign(HAlign_Right).VAlign(VAlign_Center).Padding(0.0f)
+							[
+								SNew(SButton)
+								.ButtonStyle(_GetEditorStyle(), "NoBorder")
+								.ClickMethod(EButtonClickMethod::MouseDown)
+								.Visibility(EVisibility::Hidden)
+								[
+									SNew(SImage)
+									.Image(_GetEditorStyle().GetBrush("GenericLock"))
+								]
+							]
+							// Reset Button
+							+ SHorizontalBox::Slot().AutoWidth().HAlign(HAlign_Left).VAlign(VAlign_Center).Padding(0.0f)
+							[
+								SNew(SButton)
+								.ButtonStyle(_GetEditorStyle(), "NoBorder")
+								.ClickMethod(EButtonClickMethod::MouseDown)
+								.ToolTipText(LOCTEXT("InstancerOutputResetButtonToolTip", "Reset To Default"))
+								.Visibility(bResetButtonVisiblePosition ? EVisibility::Visible : EVisibility::Hidden)
+								[
+									SNew(SImage)
+									.Image(_GetEditorStyle().GetBrush("PropertyWindow.DiffersFromDefault"))
+								]
+								.OnClicked_Lambda([ChangeTransformOffsetUniformlyAt, CurInstanceOutput, InOutput]()
+								{
+									ChangeTransformOffsetUniformlyAt(0.0f, 0);
+									FHoudiniEngineUtils::UpdateEditorProperties(true);
+									return FReply::Handled();
+								})
+							]
+						]
+					];
+
+					FText LabelRotationText = LOCTEXT("HoudiniRotationOffset", "Rotation Offset");
+					DetailGroup->AddWidgetRow()
+					.NameContent()
+					[
+						SNew(STextBlock)
+						.Text(LabelRotationText)
+						.ToolTipText(LabelRotationText)
+						.Font(_GetEditorStyle().GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+					]
+					.ValueContent()
+					.MinDesiredWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().MaxWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
+						[
+							SNew(SRotatorInputBox)
+							.AllowSpin(true)
+							.bColorAxisLabels(true)                    
+							.Roll(TAttribute<TOptional<float>>::Create(
+								TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
+								{
+									FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+									if (!InstanceOutput)
+										return 0.0f;
+									return InstanceOutput->GetTransformOffsetAt(VariationIdx, 1, 0);
+								}
+							)))
+							.Pitch(TAttribute<TOptional<float>>::Create(
+								TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
+								{
+									FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+									if (!InstanceOutput)
+										return 0.0f;
+									return InstanceOutput->GetTransformOffsetAt(VariationIdx, 1, 1);
+								}
+							)))
+							.Yaw(TAttribute<TOptional<float>>::Create(
+								TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
+								{
+									FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+									if (!InstanceOutput)
+										return 0.0f;
+									return InstanceOutput->GetTransformOffsetAt(VariationIdx, 1, 2);
+								}
+							)))
+							.OnRollCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt](float Val, ETextCommit::Type TextCommitType)
+							{
+								FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+								if (!InstanceOutput)
+									return;
+								ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 1, 0);
+							})	
+							.OnPitchCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt](float Val, ETextCommit::Type TextCommitType)
+							{
+								FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+								if (!InstanceOutput)
+									return;
+								ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 1, 1);
+							})
+							.OnYawCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt](float Val, ETextCommit::Type TextCommitType)
+							{
+								FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+								if (!InstanceOutput)
+									return;
+								ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 1, 2);
+							})
+						]
+
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.HAlign(HAlign_Right)
+						[
+							// Lock Button (not visible)
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().AutoWidth().HAlign(HAlign_Right).VAlign(VAlign_Center).Padding(0.0f)
+							[
+								SNew(SButton)
+								.ButtonStyle(_GetEditorStyle(), "NoBorder")
+								.ClickMethod(EButtonClickMethod::MouseDown)
+								.Visibility(EVisibility::Hidden)
+								[
+									SNew(SImage)
+									.Image(_GetEditorStyle().GetBrush("GenericLock"))
+								]
+							]
+							// Reset Button
+							+ SHorizontalBox::Slot().AutoWidth().HAlign(HAlign_Left).VAlign(VAlign_Center).Padding(0.0f)
+							[
+								SNew(SButton)
+								.ButtonStyle(_GetEditorStyle(), "NoBorder")
+								.ClickMethod(EButtonClickMethod::MouseDown)
+								.ToolTipText(LOCTEXT("GeoInputResetButtonToolTip", "Reset To Default"))
+								.Visibility(bResetButtonVisibleRotation ? EVisibility::Visible : EVisibility::Hidden)
+								[
+									SNew(SImage)
+									.Image(_GetEditorStyle().GetBrush("PropertyWindow.DiffersFromDefault"))
+								]
+								.OnClicked_Lambda([ChangeTransformOffsetUniformlyAt, InOutput]()
+								{
+									ChangeTransformOffsetUniformlyAt(0.0f, 1);
+									FHoudiniEngineUtils::UpdateEditorProperties(true);
+									return FReply::Handled();
+								})
+							]
+						]
+					];
+
+					FText LabelScaleText = LOCTEXT("HoudiniScaleOffset", "Scale Offset");
+					DetailGroup->AddWidgetRow()
+					.NameContent()
+					[
+						SNew(STextBlock)
+						.Text(LabelScaleText)
+						.ToolTipText(LabelScaleText)
+						.Font(_GetEditorStyle().GetFontStyle(TEXT("PropertyWindow.NormalFont")))
+					]
+					.ValueContent()
+					.MinDesiredWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
+					[
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().MaxWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
+						[
+							SNew(SVectorInputBox)
+							.bColorAxisLabels(true)
+							.X(TAttribute<TOptional<float>>::Create(
+								TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
+									{ 
+										FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+										if (!InstanceOutput)
+											return 1.0f;
+										return InstanceOutput->GetTransformOffsetAt(VariationIdx, 2, 0); 
 									}
-									return FEditorStyle::GetBrush( TEXT( "GenericUnlock" ) );
+							)))
+							.Y(TAttribute<TOptional<float>>::Create(
+								TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
+									{ 
+										FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+										if (!InstanceOutput)
+											return 1.0f;
+										return InstanceOutput->GetTransformOffsetAt(VariationIdx, 2, 1); 
+									}
+							)))
+							.Z(TAttribute<TOptional<float>>::Create(
+								TAttribute<TOptional<float>>::FGetter::CreateLambda([InOutput, CurOutputObjectIdentifier, VariationIdx]()
+									{ 
+										FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+										if (!InstanceOutput)
+											return 1.0f;
+										return InstanceOutput->GetTransformOffsetAt(VariationIdx, 2, 2); 
+									}
+							)))
+							.OnXCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt, ChangeTransformOffsetUniformlyAt](float Val, ETextCommit::Type TextCommitType)
+							{
+								FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+								if (!InstanceOutput)
+									return;
+								if (InstanceOutput->IsUnformScaleLocked())
+									ChangeTransformOffsetUniformlyAt(Val, 2);
+								else
+									ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 2, 0); 
+							})	
+							.OnYCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt, ChangeTransformOffsetUniformlyAt](float Val, ETextCommit::Type TextCommitType)
+							{
+								FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+								if (!InstanceOutput)
+									return;
+								if (InstanceOutput->IsUnformScaleLocked())
+									ChangeTransformOffsetUniformlyAt(Val, 2);
+								else
+									ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 2, 1); 
+							})
+							.OnZCommitted_Lambda([InOutput, CurOutputObjectIdentifier, VariationIdx, ChangeTransformOffsetAt, ChangeTransformOffsetUniformlyAt](float Val, ETextCommit::Type TextCommitType)
+							{
+								FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+								if (!InstanceOutput)
+									return;
+								if (InstanceOutput->IsUnformScaleLocked())
+									ChangeTransformOffsetUniformlyAt(Val, 2);
+								else
+									ChangeTransformOffsetAt(*InstanceOutput, VariationIdx, Val, 2, 2);
+							})
+						]
+
+						+ SHorizontalBox::Slot()
+						.AutoWidth()
+						.HAlign(HAlign_Right)
+						[
+							// Lock Button
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot().AutoWidth().HAlign(HAlign_Right).VAlign(VAlign_Center).Padding(0.0f)
+							[
+								SNew(SButton)
+								.ButtonStyle(_GetEditorStyle(), "NoBorder")
+								.ClickMethod(EButtonClickMethod::MouseDown)
+								.ToolTipText(LOCTEXT("InstancerOutputLockButtonToolTip", "When locked, scales uniformly based on the current xyz scale values so the output object maintains its shape in each direction when scaled"))
+								.Visibility(EVisibility::Visible)
+								[
+									SNew(SImage)
+									.Image(CurInstanceOutput.IsUnformScaleLocked() ? _GetEditorStyle().GetBrush("GenericLock") : _GetEditorStyle().GetBrush("GenericUnlock"))
+								]
+								.OnClicked_Lambda([InOutput, CurOutputObjectIdentifier]() 
+								{
+									FHoudiniInstancedOutput* InstanceOutput = GetInstancedOutput(InOutput, CurOutputObjectIdentifier);
+									if (!InstanceOutput)
+										return FReply::Handled();
+									
+									InstanceOutput->SwitchUniformScaleLock();
+									
+									FHoudiniEngineUtils::UpdateEditorProperties(true);
+									return FReply::Handled();
+								})
+							]
+							// Reset Button
+							+ SHorizontalBox::Slot().AutoWidth().HAlign(HAlign_Left).VAlign(VAlign_Center).Padding(0.0f)
+							[
+								SNew(SButton)
+								.ButtonStyle(_GetEditorStyle(), "NoBorder")
+								.ClickMethod(EButtonClickMethod::MouseDown)
+								.ToolTipText(LOCTEXT("GeoInputResetButtonToolTip", "Reset To Default"))
+								.Visibility(bResetButtonVisibleScale ? EVisibility::Visible : EVisibility::Hidden)
+								[
+									SNew(SImage)
+									.Image(_GetEditorStyle().GetBrush("PropertyWindow.DiffersFromDefault"))
+								]
+								.OnClicked_Lambda([ChangeTransformOffsetUniformlyAt, InOutput]()
+								{
+									ChangeTransformOffsetUniformlyAt(1.0f, 2);
+									FHoudiniEngineUtils::UpdateEditorProperties(true);
+									return FReply::Handled();
+								})
+							]
+						]
+						/*
+						// TODO: Add support for this back
+						+ SHorizontalBox::Slot().AutoWidth()
+						[
+							// Add a checkbox to toggle between preserving the ratio of x,y,z components of scale when a value is entered
+							SNew(SCheckBox)
+							.Style(_GetEditorStyle(), "TransparentCheckBox")
+							.ToolTipText(LOCTEXT("PreserveScaleToolTip", "When locked, scales uniformly based on the current xyz scale values so the object maintains its shape in each direction when scaled"))
+							*//*
+							.OnCheckStateChanged(FOnCheckStateChanged::CreateLambda([=](ECheckBoxState NewState)
+							{
+								if ( MyParam.IsValid() && InputFieldPtr.IsValid() )
+									MyParam->CheckStateChanged( NewState == ECheckBoxState::Checked, InputFieldPtr.Get(), VariationIdx );
+							}))
+							.IsChecked( TAttribute< ECheckBoxState >::Create(
+								TAttribute<ECheckBoxState>::FGetter::CreateLambda( [=]() 
+								{
+									if (InputFieldPtr.IsValid() && InputFieldPtr->AreOffsetsScaledLinearly(VariationIdx))
+										return ECheckBoxState::Checked;
+									return ECheckBoxState::Unchecked;
 								}
 							)))
 							*//*
-							.ColorAndOpacity( FSlateColor::UseForeground() )
+							[
+								SNew(SImage)
+								*//*.Image(TAttribute<const FSlateBrush*>::Create(
+									TAttribute<const FSlateBrush*>::FGetter::CreateLambda( [=]() 
+									{
+										if ( InputFieldPtr.IsValid() && InputFieldPtr->AreOffsetsScaledLinearly( VariationIdx ) )
+										{
+											return FEditorStyle::GetBrush( TEXT( "GenericLock" ) );
+										}
+										return FEditorStyle::GetBrush( TEXT( "GenericUnlock" ) );
+									}
+								)))
+								*//*
+								.ColorAndOpacity( FSlateColor::UseForeground() )
+							]
 						]
-					]
-					*/
-				];
+						*/
+					];
+					}
+				}
 			}
 		}
 	}
-}
 
 /*
 void
@@ -4041,13 +4403,14 @@ FHoudiniOutputDetails::OnBakeOutputObject(
 	const FHoudiniOutputObject& InOutputObject,
 	const FHoudiniGeoPartObject & HGPO,
 	const UObject* OutputOwner,
+	UHoudiniOutput* InOutput,
 	const FString & BakeFolder,
+	const FHoudiniBakeSettings& BakeSettings,
 	const FString & TempCookFolder,
-	const EHoudiniOutputType & Type,
 	const EHoudiniLandscapeOutputBakeType & LandscapeBakeType,
 	const TArray<UHoudiniOutput*>& InAllOutputs)
 {
-	if (!IsValid(BakedOutputObject))
+	if (!IsValid(BakedOutputObject) || !IsValid(InOutput))
 		return;
 
 	// Fill in the package params
@@ -4057,22 +4420,68 @@ FHoudiniOutputDetails::OnBakeOutputObject(
 	FHoudiniAttributeResolver Resolver;
 	// Determine the relevant WorldContext based on the output owner
 	UWorld* WorldContext = OutputOwner ? OutputOwner->GetWorld() : GWorld;
-	const UHoudiniAssetComponent* HAC = FHoudiniEngineUtils::GetOuterHoudiniAssetComponent(OutputOwner);
+	UHoudiniAssetComponent* const HAC = FHoudiniEngineUtils::GetOuterHoudiniAssetComponent(OutputOwner);
 	check(IsValid(HAC));
-	const FString HoudiniAssetName = IsValid(HAC->GetHoudiniAsset()) ? HAC->GetHoudiniAsset()->GetName() : TEXT("");
+
+	// Check if we have previously baked this object on this HAC
+	bool bHasPreviousBakeData = false;
+	FHoudiniBakedOutputObject BakedObjectEntry;
+	const int32 OutputIndex = InAllOutputs.IndexOfByKey(InOutput);
+	if (OutputIndex >= 0 && HAC->GetBakedOutputs().IsValidIndex(OutputIndex))
+	{
+		FHoudiniBakedOutputObject const* const PrevBakedOutputObject = HAC->GetBakedOutputs()[OutputIndex].BakedOutputObjects.Find(OutputIdentifier);
+		if (PrevBakedOutputObject)
+		{
+			bHasPreviousBakeData = true;
+			BakedObjectEntry = *PrevBakedOutputObject;
+		}
+	}
+	
+	const FString HoudiniAssetName = HAC->GetHoudiniAssetName();
 	const FString HoudiniAssetActorName = IsValid(HAC->GetOwner()) ? HAC->GetOwner()->GetActorNameOrLabel() : TEXT("");
 	const bool bAutomaticallySetAttemptToLoadMissingPackages = true;
 	const bool bSkipObjectNameResolutionAndUseDefault = !InBakeName.IsEmpty();  // If InBakeName is set use it as is for the object name
 	const bool bSkipBakeFolderResolutionAndUseDefault = false;
+
+	FString DefaultObjectName;
+	if (InBakeName.IsEmpty())
+	{
+		// First get names from previous bake entry
+		if (bHasPreviousBakeData)
+		{
+			UObject const* const PrevObject = BakedObjectEntry.GetBakedObjectIfValid();
+			if (PrevObject)
+			{
+				DefaultObjectName = PrevObject->GetName();
+			}
+			else
+			{
+				AActor const* const PrevActor = BakedObjectEntry.GetActorIfValid();
+				if (PrevActor)
+					DefaultObjectName = PrevActor->GetName();
+			}
+		}
+
+		// fallback to name from BakedOutputObject
+		if (DefaultObjectName.IsEmpty())
+			DefaultObjectName = BakedOutputObject->GetName();
+	}
+	else
+	{
+		DefaultObjectName = InBakeName;
+	}
+	
 	FHoudiniEngineUtils::FillInPackageParamsForBakingOutputWithResolver(
-		WorldContext, HAC, OutputIdentifier, InOutputObject, BakedOutputObject->GetName(),
+		WorldContext, HAC, OutputIdentifier, InOutputObject, bHasPreviousBakeData, BakedOutputObject->GetName(),
 		PackageParams, Resolver, BakeFolder, EPackageReplaceMode::ReplaceExistingAssets,
 		HoudiniAssetName, HoudiniAssetActorName,
 		bAutomaticallySetAttemptToLoadMissingPackages, bSkipObjectNameResolutionAndUseDefault,
 		bSkipBakeFolderResolutionAndUseDefault);
 
-	FHoudiniEngineOutputStats BakeStats;
-	
+	const EHoudiniOutputType Type = InOutput->GetType();
+
+	FHoudiniBakedObjectData BakeOutputs;
+
 	switch (Type) 
 	{
 		case EHoudiniOutputType::Mesh:
@@ -4085,7 +4494,11 @@ FHoudiniOutputDetails::OnBakeOutputObject(
 				TMap<UStaticMesh*, UStaticMesh*> AlreadyBakedStaticMeshMap;
 				TMap<UMaterialInterface *, UMaterialInterface *> AlreadyBakedMaterialsMap;
 				UStaticMesh* DuplicatedMesh = FHoudiniEngineBakeUtils::BakeStaticMesh(
-					StaticMesh, PackageParams, InAllOutputs, TempCookFolderPath, AlreadyBakedStaticMeshMap, AlreadyBakedMaterialsMap, BakeStats);
+					StaticMesh, PackageParams, InAllOutputs, TempCookFolderPath, AlreadyBakedStaticMeshMap, AlreadyBakedMaterialsMap);
+
+				BakedObjectEntry.Actor.Empty();
+				BakedObjectEntry.BakedComponent.Empty();
+				BakedObjectEntry.BakedObject = FSoftObjectPath(DuplicatedMesh).ToString();
 			}
 		}
 		break;
@@ -4097,7 +4510,11 @@ FHoudiniOutputDetails::OnBakeOutputObject(
 				AActor* BakedActor;
 				USplineComponent* BakedSplineComponent;
 				FHoudiniEngineBakeUtils::BakeCurve(
-					HAC, SplineComponent, GWorld->GetCurrentLevel(), PackageParams, FName(PackageParams.ObjectName), BakedActor, BakedSplineComponent, BakeStats);
+					HAC, SplineComponent, GWorld->GetCurrentLevel(), PackageParams, BakeSettings, FName(PackageParams.ObjectName), BakedActor, BakedSplineComponent, BakeOutputs);
+
+				BakedObjectEntry.Actor = FSoftObjectPath(BakedActor).ToString();
+				BakedObjectEntry.BakedComponent = FSoftObjectPath(BakedSplineComponent).ToString();
+				BakedObjectEntry.BakedObject.Empty();
 			}
 		}
 		break;
@@ -4106,15 +4523,28 @@ FHoudiniOutputDetails::OnBakeOutputObject(
 			ALandscapeProxy* Landscape = Cast<ALandscapeProxy>(BakedOutputObject);
 			if (Landscape)
 			{
-				FHoudiniEngineBakeUtils::BakeHeightfield(Landscape, PackageParams, LandscapeBakeType, BakeStats);
+				FHoudiniEngineBakeUtils::BakeHeightfield(Landscape, PackageParams, LandscapeBakeType, BakeOutputs);
+				BakedObjectEntry.Actor.Empty();
+				BakedObjectEntry.BakedComponent.Empty();
+				BakedObjectEntry.BakedObject.Empty();
 			}
 		}
 		break;
 	}
 
+	if (OutputIndex >= 0)
+	{
+		TArray<FHoudiniBakedOutput>& BakedOutputs = HAC->GetBakedOutputs();
+		if (!BakedOutputs.IsValidIndex(OutputIndex))
+		{
+			BakedOutputs.SetNum(OutputIndex + 1);
+		}
+		BakedOutputs[OutputIndex].BakedOutputObjects.Emplace(OutputIdentifier, BakedObjectEntry);
+	}
+
 	{
 		const FString FinishedTemplate = TEXT("Baking finished. Created {0} packages. Updated {1} packages.");
-		FString Msg = FString::Format(*FinishedTemplate, { BakeStats.NumPackagesCreated, BakeStats.NumPackagesUpdated } );
+		FString Msg = FString::Format(*FinishedTemplate, { BakeOutputs.BakeStats.NumPackagesCreated, BakeOutputs.BakeStats.NumPackagesUpdated } );
 		FHoudiniEngine::Get().FinishTaskSlateNotification( FText::FromString(Msg) );
 	}
 
@@ -4126,9 +4556,6 @@ FHoudiniOutputDetails::OnRefineClicked(const TWeakObjectPtr<UObject> ObjectToRef
 	// TODO: Actually refine only the selected ProxyMesh
 	// For now, refine all the selection
 	FHoudiniEngineCommands::RefineHoudiniProxyMeshesToStaticMeshes(true, true);
-
-	if (InOutput.IsValid())
-		FHoudiniEngineUtils::UpdateEditorProperties(InOutput->GetOuter(), true);
 	
 	return FReply::Handled();
 }
@@ -4164,4 +4591,545 @@ FHoudiniOutputDetails::OnRevertBakeNameToDefault(const TWeakObjectPtr<UHoudiniOu
 
 	FoundOutputObject->BakeName = FString();
 }
+
+
+void
+FHoudiniOutputDetails::CreateSkeletalMeshAndMaterialWidgets(
+	IDetailCategoryBuilder& HouOutputCategory,
+	const TWeakObjectPtr<UHoudiniOutput>& InOutput,
+	const TWeakObjectPtr<USkeletalMesh>& SkelMesh,
+	const TWeakObjectPtr<USkeleton>& Skeleton,
+	const TWeakObjectPtr<UPhysicsAsset>& PhysicsAsset,
+	FHoudiniOutputObjectIdentifier& OutputIdentifier,
+	FHoudiniGeoPartObject& HoudiniGeoPartObject)
+{
+	if (!IsValidWeakPointer(SkelMesh) && !IsValidWeakPointer(Skeleton) && !IsValidWeakPointer(PhysicsAsset))
+		return;
+
+
+	const TWeakObjectPtr<UHoudiniAssetComponent>& OwningHAC = Cast<UHoudiniAssetComponent>(InOutput->GetOuter());
+
+	FHoudiniOutputObject* FoundOutputObject = InOutput->GetOutputObjects().Find(OutputIdentifier);
+	FString BakeName = FoundOutputObject ? FoundOutputObject->BakeName : FString();
+
+	// Get thumbnail pool for this builder.
+	IDetailLayoutBuilder& DetailLayoutBuilder = HouOutputCategory.GetParentLayout();
+	TSharedPtr<FAssetThumbnailPool> AssetThumbnailPool = DetailLayoutBuilder.GetThumbnailPool();
+
+	// TODO: GetBakingBaseName!
+	FString SkelLabel;
+
+	if (Skeleton.IsValid())
+		SkelLabel = Skeleton->GetName();
+
+	if (SkelMesh.IsValid())
+		SkelLabel = SkelMesh->GetName();
+
+	if (HoudiniGeoPartObject.bHasCustomPartName)
+		SkelLabel = HoudiniGeoPartObject.PartName;
+
+	// Create thumbnail for this mesh.
+	TSharedPtr<FAssetThumbnail> SkeletonThumbnail = MakeShareable(new FAssetThumbnail(Skeleton.Get(), 64, 64, AssetThumbnailPool));
+	TSharedPtr<SBorder> SkeletonThumbnailBorder;
+
+	TSharedPtr<FAssetThumbnail> PhysicsAssetThumbnail = MakeShareable(new FAssetThumbnail(PhysicsAsset.Get(), 64, 64, AssetThumbnailPool));
+	TSharedPtr<SBorder> PhysicsAssetThumbnailBorder;
+
+	TSharedRef<SVerticalBox> SkeletonVerticalBox = SNew(SVerticalBox);
+	TSharedRef<SVerticalBox> PhysicsAssetVerticalBox = SNew(SVerticalBox);
+
+	IDetailGroup& SkeletonGrp = HouOutputCategory.AddGroup(FName(*SkelLabel), FText::FromString(SkelLabel));
+
+	// Add details on the Skeleton.
+
+	if (IsValid(Skeleton.Get()))
+	{
+		FString SkeletonLabel = TEXT("Skeleton");
+
+		SkeletonGrp.AddWidgetRow()
+			.NameContent()
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(SkeletonLabel))
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+			]
+			.ValueContent()
+			.MinDesiredWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
+			[
+				SkeletonVerticalBox
+			];
+
+		SkeletonVerticalBox->AddSlot()
+			.Padding(0, 2)
+			.AutoHeight()
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+					.Padding(0.0f, 0.0f, 2.0f, 0.0f)
+					.AutoWidth()
+					[
+						SAssignNew(SkeletonThumbnailBorder, SBorder)
+						.Padding(5.0f)
+						.BorderImage(this, &FHoudiniOutputDetails::GetThumbnailBorder, (const TWeakObjectPtr<UObject>&)Skeleton)
+						.OnMouseDoubleClick(this, &FHoudiniOutputDetails::OnThumbnailDoubleClick, (const TWeakObjectPtr<UObject>&) Skeleton)
+						[
+							SNew(SBox)
+							.WidthOverride(64)
+							.HeightOverride(64)
+							.ToolTipText(FText::FromString(Skeleton->GetPathName()))
+							[
+								SkeletonThumbnail->MakeThumbnailWidget()
+							]
+						]
+					]
+
+				+ SHorizontalBox::Slot()
+					.FillWidth(1.0f)
+					.Padding(0.0f, 4.0f, 4.0f, 4.0f)
+					.VAlign(VAlign_Center)
+					[
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+								.AutoWidth()
+								.Padding(2.0f, 0.0f)
+								.VAlign(VAlign_Center)
+								[
+									PropertyCustomizationHelpers::MakeBrowseButton(
+										FSimpleDelegate::CreateSP(
+											this, &FHoudiniOutputDetails::OnBrowseTo, (const TWeakObjectPtr<UObject>&)Skeleton),
+										TAttribute<FText>(LOCTEXT("HoudiniSkelMeshBrowseButton", "Browse to this generated Skeleton in the content browser")))
+								]
+						]
+					]
+			];
+
+		// Store thumbnail for this mesh.
+		OutputObjectThumbnailBorders.Add(Skeleton, SkeletonThumbnailBorder);	
+	}
+
+	if (IsValid(PhysicsAsset.Get()))
+	{
+		FString PhysicsAssetLabel = TEXT("Physics Asset");
+
+		SkeletonGrp.AddWidgetRow()
+			.NameContent()
+			[
+				SNew(STextBlock)
+				.Text(FText::FromString(PhysicsAssetLabel))
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+			]
+			.ValueContent()
+			.MinDesiredWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
+			[
+				PhysicsAssetVerticalBox
+			];
+
+			PhysicsAssetVerticalBox->AddSlot()
+			.Padding(0, 2)
+			.AutoHeight()
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot()
+					.Padding(0.0f, 0.0f, 2.0f, 0.0f)
+					.AutoWidth()
+					[
+						SAssignNew(PhysicsAssetThumbnailBorder, SBorder)
+							.Padding(5.0f)
+							.BorderImage(this, &FHoudiniOutputDetails::GetThumbnailBorder, (const TWeakObjectPtr<UObject>&)PhysicsAsset)
+							.OnMouseDoubleClick(this, &FHoudiniOutputDetails::OnThumbnailDoubleClick, (const TWeakObjectPtr<UObject>&) PhysicsAsset)
+							[
+								SNew(SBox)
+								.WidthOverride(64)
+								.HeightOverride(64)
+								.ToolTipText(FText::FromString(PhysicsAsset->GetPathName()))
+								[
+									PhysicsAssetThumbnail->MakeThumbnailWidget()
+								]
+							]
+					]
+
+				+ SHorizontalBox::Slot()
+					.FillWidth(1.0f)
+					.Padding(0.0f, 4.0f, 4.0f, 4.0f)
+					.VAlign(VAlign_Center)
+					[
+						SNew(SVerticalBox)
+						+ SVerticalBox::Slot()
+						[
+							SNew(SHorizontalBox)
+							+ SHorizontalBox::Slot()
+								.AutoWidth()
+								.Padding(2.0f, 0.0f)
+								.VAlign(VAlign_Center)
+								[
+									PropertyCustomizationHelpers::MakeBrowseButton(
+										FSimpleDelegate::CreateSP(
+											this, &FHoudiniOutputDetails::OnBrowseTo, (const TWeakObjectPtr<UObject>&)PhysicsAsset),
+										TAttribute<FText>(LOCTEXT("HoudiniSkelMeshBrowseButton", "Browse to this Physics Asset in the content browser")))
+								]
+						]
+					]
+			];
+
+		// Store thumbnail for this mesh.
+		OutputObjectThumbnailBorders.Add(PhysicsAsset, PhysicsAssetThumbnailBorder);
+	}
+
+	// SKEL MESH
+	if (!IsValidWeakPointer(SkelMesh))
+		return;
+
+	// TODO: GetBakingBaseName!
+	FString SkelMeshLabel = SkelMesh->GetName();
+	if (HoudiniGeoPartObject.bHasCustomPartName)
+		SkelMeshLabel = HoudiniGeoPartObject.PartName;
+
+	// Create thumbnail for this mesh.
+	TSharedPtr<FAssetThumbnail> SkelMeshThumbnail =
+		MakeShareable(new FAssetThumbnail(SkelMesh.Get(), 64, 64, AssetThumbnailPool));
+	TSharedPtr<SBorder> SkelMeshThumbnailBorder;
+
+	TSharedRef<SVerticalBox> SKMVerticalBox = SNew(SVerticalBox);
+
+	/*
+	SkeletonGrp.AddWidgetRow()
+	.NameContent()
+	[
+		SNew(STextBlock)
+		.Text(LOCTEXT("BakeBaseName", "Bake Name"))
+		.Font(IDetailLayoutBuilder::GetDetailFont())
+	]
+	.ValueContent()
+	.MinDesiredWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
+	[
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.Padding(2.0f, 0.0f)
+		.VAlign(VAlign_Center)
+		.FillWidth(1)
+		[
+			SNew(SEditableTextBox)
+			.Text(FText::FromString(BakeName))
+			.HintText(LOCTEXT("BakeNameHintText", "Input bake name to override default"))
+			.Font(IDetailLayoutBuilder::GetDetailFont())
+			.OnTextCommitted_Lambda([OutputIdentifier, InOutput](const FText& Val, ETextCommit::Type TextCommitType)
+			{
+				if (!IsValidWeakPointer(InOutput))
+					return;
+
+				FHoudiniOutputDetails::OnBakeNameCommitted(Val, TextCommitType, InOutput, OutputIdentifier);
+				FHoudiniEngineUtils::UpdateEditorProperties(true);
+			})
+			.ToolTipText(LOCTEXT("BakeNameTip", "The base name of the baked asset"))
+		]
+	
+		+ SHorizontalBox::Slot()
+		.Padding(2.0f, 0.0f)
+		.VAlign(VAlign_Center)
+		.AutoWidth()
+		[
+			SNew(SButton)
+			.ToolTipText(LOCTEXT("RevertNameOverride", "Revert bake name override"))
+			.ButtonStyle(_GetEditorStyle(), "NoBorder")
+			.ContentPadding(0)
+			.Visibility(EVisibility::Visible)
+			.OnClicked_Lambda([InOutput, OutputIdentifier]()
+			{
+				FHoudiniOutputDetails::OnRevertBakeNameToDefault(InOutput, OutputIdentifier);
+				FHoudiniEngineUtils::UpdateEditorProperties(true);
+				return FReply::Handled();
+			})
+			[
+				SNew(SImage)
+				.Image(_GetEditorStyle().GetBrush("PropertyWindow.DiffersFromDefault"))
+			]
+		]
+	];
+	*/
+
+	// Add details on the SkelMesh colliders
+	FString SKMLabel = TEXT("Skeletal Mesh");
+
+	/*
+	// Indicate that this mesh is instanced
+	if (HoudiniGeoPartObject.bIsInstanced)
+	{
+		MeshLabel += TEXT("\n(instanced)");
+	}
+
+	if (HoudiniGeoPartObject.bIsTemplated)
+	{
+		MeshLabel += TEXT("\n(templated)");
+	}
+	*/
+	SkeletonGrp.AddWidgetRow()
+	.NameContent()
+	[
+		SNew(STextBlock)
+		.Text(FText::FromString(SKMLabel))
+		.Font(IDetailLayoutBuilder::GetDetailFont())
+	]
+	.ValueContent()
+	.MinDesiredWidth(HAPI_UNREAL_DESIRED_ROW_VALUE_WIDGET_WIDTH)
+	[
+		SKMVerticalBox
+	];
+
+	SKMVerticalBox->AddSlot()
+	.Padding(0, 2)
+	.AutoHeight()
+	[
+		SNew(SHorizontalBox)
+		+ SHorizontalBox::Slot()
+		.Padding(0.0f, 0.0f, 2.0f, 0.0f)
+		.AutoWidth()
+		[
+			SAssignNew(SkelMeshThumbnailBorder, SBorder)
+			.Padding(5.0f)
+			.BorderImage(this, &FHoudiniOutputDetails::GetThumbnailBorder, (const TWeakObjectPtr<UObject>&)SkelMesh)
+			.OnMouseDoubleClick(this, &FHoudiniOutputDetails::OnThumbnailDoubleClick, (const TWeakObjectPtr<UObject>&) SkelMesh)
+			[
+				SNew(SBox)
+				.WidthOverride(64)
+				.HeightOverride(64)
+				.ToolTipText(FText::FromString(SkelMesh->GetPathName()))
+				[
+					SkelMeshThumbnail->MakeThumbnailWidget()
+				]
+			]
+		]
+
+		+ SHorizontalBox::Slot()
+		.FillWidth(1.0f)
+		.Padding(0.0f, 4.0f, 4.0f, 4.0f)
+		.VAlign(VAlign_Center)
+		[
+			SNew(SVerticalBox)
+			+ SVerticalBox::Slot()
+			[
+				SNew(SHorizontalBox)
+				/*
+				+ SHorizontalBox::Slot()
+				.MaxWidth(120.0f)
+				[
+					SNew(SButton)
+					.VAlign(VAlign_Center)
+					.HAlign(HAlign_Center)
+					.Text(LOCTEXT("BakeOutputMesh", "Bake Output"))
+					.IsEnabled(true)
+					.OnClicked_Lambda([BakeName, SkelMesh, OutputIdentifier, InOutput, OwningHAC]()
+					{
+						if (!SkelMesh.IsValid() || !InOutput.IsValid())
+							return FReply::Handled();
+
+						FHoudiniOutputObject* const FoundOutputObject = InOutput->GetOutputObjects().Find(OutputIdentifier);
+						if (!FoundOutputObject)
+							return FReply::Handled();
+
+						TArray<UHoudiniOutput*> AllOutputs;
+						FString TempCookFolder;
+						FString BakeFolder;
+						if (OwningHAC.IsValid())
+						{
+							AllOutputs.Reserve(OwningHAC->GetNumOutputs());
+							OwningHAC->GetOutputs(AllOutputs);
+
+							TempCookFolder = OwningHAC->TemporaryCookFolder.Path;
+							BakeFolder = OwningHAC->BakeFolder.Path;
+						}
+
+						FHoudiniGeoPartObject HoudiniGeoPartObject;
+						for (const auto& curHGPO : InOutput->GetHoudiniGeoPartObjects())
+						{
+							if (!OutputIdentifier.Matches(curHGPO))
+								continue;
+
+							HoudiniGeoPartObject = curHGPO;
+							break;
+						}
+
+						FHoudiniOutputDetails::OnBakeOutputObject(
+							BakeName,
+							SkelMesh.Get(),
+							OutputIdentifier,
+							*FoundOutputObject,
+							HoudiniGeoPartObject,
+							OwningHAC.Get(),
+							InOutput.Get(),
+							BakeFolder,
+							TempCookFolder,
+							EHoudiniLandscapeOutputBakeType::InValid,
+							AllOutputs);
+
+						return FReply::Handled();
+					})
+					.ToolTipText(LOCTEXT("HoudiniSkelMeshBakeButton", "Bake this output object to a Skeletal Mesh in the Bake folder."))
+				]
+				*/
+				+ SHorizontalBox::Slot()
+				.AutoWidth()
+				.Padding(2.0f, 0.0f)
+				.VAlign(VAlign_Center)
+				[
+					PropertyCustomizationHelpers::MakeBrowseButton(
+						FSimpleDelegate::CreateSP(
+							this, &FHoudiniOutputDetails::OnBrowseTo, (const TWeakObjectPtr<UObject>&)SkelMesh),
+						TAttribute<FText>(LOCTEXT("HoudiniSkelMeshBrowseButton", "Browse to this generated Skeletal Mesh in the content browser")))
+				]
+			]
+		]
+	];
+
+	// Store thumbnail for this mesh.
+	OutputObjectThumbnailBorders.Add(SkelMesh, SkelMeshThumbnailBorder);
+
+	// We need to add material box for each material present in this static mesh.	
+	auto& SkelMeshMaterials = SkelMesh->GetMaterials();
+	for (int32 MaterialIdx = 0; MaterialIdx < SkelMeshMaterials.Num(); ++MaterialIdx)
+	{
+		UMaterialInterface* MaterialInterface = SkelMeshMaterials[MaterialIdx].MaterialInterface;
+		TSharedPtr< SBorder > MaterialThumbnailBorder;
+		TSharedPtr< SHorizontalBox > HorizontalBox = NULL;
+
+		FString MaterialName, MaterialPathName;
+		if (IsValid(MaterialInterface)
+			&& IsValid(MaterialInterface->GetOuter()))
+		{
+			MaterialName = MaterialInterface->GetName();
+			MaterialPathName = MaterialInterface->GetPathName();
+		}
+		else
+		{
+			MaterialInterface = nullptr;
+			MaterialName = TEXT("Material (invalid)") + FString::FromInt(MaterialIdx);
+			MaterialPathName = TEXT("Material (invalid)") + FString::FromInt(MaterialIdx);
+		}
+
+		// Create thumbnail for this material.
+		TSharedPtr< FAssetThumbnail > MaterialInterfaceThumbnail =
+			MakeShareable(new FAssetThumbnail(MaterialInterface, 64, 64, AssetThumbnailPool));
+
+		SKMVerticalBox->AddSlot()
+		.Padding(0, 2)
+		[
+			/*SNew(SAssetDropTarget)
+			.OnAreAssetsAcceptableForDrop(this, false)
+			.OnAssetsDropped(
+				this, &FHoudiniOutputDetails::OnMaterialInterfaceDropped, SkelMesh, InOutput, MaterialIdx)*/
+			SNew(SBox)
+			[
+				SAssignNew(HorizontalBox, SHorizontalBox)
+			]
+		];
+
+		HorizontalBox->AddSlot()
+		.Padding(0.0f, 0.0f, 2.0f, 0.0f)
+		.AutoWidth()
+		[
+			SAssignNew(MaterialThumbnailBorder, SBorder)
+			.Padding(5.0f)
+			.BorderImage(
+				this, &FHoudiniOutputDetails::GetMaterialInterfaceThumbnailBorder, (const TWeakObjectPtr<UObject>&)SkelMesh, MaterialIdx)
+			.OnMouseDoubleClick(
+				this, &FHoudiniOutputDetails::OnThumbnailDoubleClick, (const TWeakObjectPtr<UObject>&)MaterialInterface)
+			[
+				SNew(SBox)
+				.WidthOverride(64)
+				.HeightOverride(64)
+				.ToolTipText(FText::FromString(MaterialPathName))
+				[
+					MaterialInterfaceThumbnail->MakeThumbnailWidget()
+				]
+			]
+		];
+
+		// Store thumbnail for this mesh and material index.
+		{
+			TPairInitializer<const TWeakObjectPtr<USkeletalMesh>&, int32> Pair(SkelMesh, MaterialIdx);
+			MaterialInterfaceThumbnailBorders.Add(Pair, MaterialThumbnailBorder);
+		}
+
+		// ComboBox and buttons
+		TSharedPtr<SVerticalBox> ComboAndButtonBox;
+		HorizontalBox->AddSlot()
+		.FillWidth(1.0f)
+		.Padding(0.0f, 4.0f, 4.0f, 4.0f)
+		[
+			SAssignNew(ComboAndButtonBox, SVerticalBox)
+		];
+
+		// Add Combo box
+		TSharedPtr<SComboButton> AssetComboButton;
+		ComboAndButtonBox->AddSlot()
+		.VAlign(VAlign_Center)
+		.FillHeight(1.0f)
+		[
+			SNew(SVerticalBox) + SVerticalBox::Slot().VAlign(VAlign_Center).FillHeight(1.0f)
+			[
+				SAssignNew(AssetComboButton, SComboButton)
+				.ButtonStyle(_GetEditorStyle(), "PropertyEditor.AssetComboStyle")
+				.ForegroundColor(_GetEditorStyle().GetColor("PropertyEditor.AssetName.ColorAndOpacity"))
+				.OnGetMenuContent(this, &FHoudiniOutputDetails::OnGetMaterialInterfaceMenuContent,
+					TWeakObjectPtr<UMaterialInterface>(MaterialInterface), (const TWeakObjectPtr<UObject>&)SkelMesh, InOutput, MaterialIdx)
+				.ContentPadding(2.0f)
+				.ButtonContent()
+				[
+					SNew(STextBlock)
+					.TextStyle(_GetEditorStyle(), "PropertyEditor.AssetClass")
+					.Font(_GetEditorStyle().GetFontStyle(FName(TEXT("PropertyWindow.NormalFont"))))
+					.Text(FText::FromString(MaterialName))
+				]
+			]
+		];
+
+		// Create tooltip.
+		FFormatNamedArguments Args;
+		Args.Add(TEXT("Asset"), FText::FromString(MaterialName));
+		FText MaterialTooltip = FText::Format(
+			LOCTEXT("BrowseToSpecificAssetInContentBrowser", "Browse to '{Asset}' in Content Browser"), Args);
+
+		// Add buttons
+		TSharedPtr<SHorizontalBox> ButtonBox;
+		ComboAndButtonBox->AddSlot()
+		.FillHeight(1.0f)
+		[
+			SAssignNew(ButtonBox, SHorizontalBox)
+		];
+
+		// Use CB selection arrow button
+		ButtonBox->AddSlot()
+		.AutoWidth()
+		.Padding(2.0f, 0.0f)
+		.VAlign(VAlign_Center)
+		[
+			PropertyCustomizationHelpers::MakeUseSelectedButton(
+				FSimpleDelegate::CreateSP(
+					this, &FHoudiniOutputDetails::OnUseContentBrowserSelectedMaterialInterface,
+					(const TWeakObjectPtr<UObject>&)SkelMesh, InOutput, MaterialIdx),
+					TAttribute< FText >(LOCTEXT("UseSelectedAssetFromContentBrowser", "Use Selected Asset from Content Browser")))
+		];
+
+		// Browse CB button
+		ButtonBox->AddSlot()
+		.AutoWidth()
+		.Padding(2.0f, 0.0f)
+		.VAlign(VAlign_Center)
+		[
+			PropertyCustomizationHelpers::MakeBrowseButton(
+				FSimpleDelegate::CreateSP(
+					this, &FHoudiniOutputDetails::OnBrowseTo, (const TWeakObjectPtr<UObject>&)MaterialInterface), TAttribute< FText >(MaterialTooltip))
+		];
+
+		// Store combo button for this mesh and index.
+		{
+			TPairInitializer<const TWeakObjectPtr<USkeletalMesh>&, int32> Pair(SkelMesh, MaterialIdx);
+			MaterialInterfaceComboButtons.Add(Pair, AssetComboButton);
+		}
+	}
+}
+
+
 #undef LOCTEXT_NAMESPACE

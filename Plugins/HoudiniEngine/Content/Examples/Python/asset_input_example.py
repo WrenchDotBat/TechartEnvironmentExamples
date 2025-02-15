@@ -39,7 +39,7 @@ _g_wrapper2 = None
 
 
 def get_copy_curve_hda_path():
-    return "/HoudiniEngine/Examples/hda/copy_to_curve_1_0.copy_to_curve_1_0"
+    return '/HoudiniEngine/Examples/hda/copy_to_curve_1_0.copy_to_curve_1_0'
 
 
 def get_copy_curve_hda():
@@ -47,7 +47,7 @@ def get_copy_curve_hda():
 
 
 def get_pig_head_hda_path():
-    return "/HoudiniEngine/Examples/hda/pig_head_subdivider_v01.pig_head_subdivider_v01"
+    return '/HoudiniEngine/Examples/hda/pig_head_subdivider_v01.pig_head_subdivider_v01'
 
 
 def get_pig_head_hda():
@@ -55,7 +55,7 @@ def get_pig_head_hda():
 
 
 def configure_inputs(in_wrapper):
-    print("configure_inputs")
+    print('configure_inputs')
 
     # Unbind from the delegate
     in_wrapper.on_post_instantiation_delegate.remove_callable(configure_inputs)
@@ -64,7 +64,7 @@ def configure_inputs(in_wrapper):
     asset_input = in_wrapper.create_empty_input(unreal.HoudiniPublicAPIAssetInput)
     # Set the input objects/assets for this input
     # asset_input.set_input_objects((_g_wrapper1.get_houdini_asset_actor().houdini_asset_component, ))
-    asset_input.set_input_objects((_g_wrapper1,))
+    asset_input.set_input_objects((_g_wrapper1, ))
     # copy the input data to the HDA as node input 0
     in_wrapper.set_input_at_index(0, asset_input)
     # We can now discard the API input object
@@ -87,7 +87,7 @@ def configure_inputs(in_wrapper):
         curve_points.append(unreal.Transform([x, y, z], [0, 0, 0], [1, 1, 1]))
     curve_object.set_curve_points(curve_points)
     # Set the curve wrapper as an input object
-    curve_input.set_input_objects((curve_object,))
+    curve_input.set_input_objects((curve_object, ))
     # Copy the input data to the HDA as node input 1
     in_wrapper.set_input_at_index(1, curve_input)
     # We can now discard the API input object
@@ -95,34 +95,30 @@ def configure_inputs(in_wrapper):
 
 
 def print_api_input(in_input):
-    print("\t\tInput type: {0}".format(in_input.__class__))
-    print("\t\tbKeepWorldTransform: {0}".format(in_input.keep_world_transform))
-    print("\t\tbImportAsReference: {0}".format(in_input.import_as_reference))
+    print('\t\tInput type: {0}'.format(in_input.__class__))
+    print('\t\tbKeepWorldTransform: {0}'.format(in_input.keep_world_transform))
+    print('\t\tbImportAsReference: {0}'.format(in_input.import_as_reference))
     if isinstance(in_input, unreal.HoudiniPublicAPICurveInput):
-        print("\t\tbCookOnCurveChanged: {0}".format(in_input.cook_on_curve_changed))
-        print(
-            "\t\tbAddRotAndScaleAttributesOnCurves: {0}".format(
-                in_input.add_rot_and_scale_attributes_on_curves
-            )
-        )
+        print('\t\tbCookOnCurveChanged: {0}'.format(in_input.cook_on_curve_changed))
+        print('\t\tbAddRotAndScaleAttributesOnCurves: {0}'.format(in_input.add_rot_and_scale_attributes_on_curves))
 
     input_objects = in_input.get_input_objects()
     if not input_objects:
-        print("\t\tEmpty input!")
+        print('\t\tEmpty input!')
     else:
-        print("\t\tNumber of objects in input: {0}".format(len(input_objects)))
+        print('\t\tNumber of objects in input: {0}'.format(len(input_objects)))
         for idx, input_object in enumerate(input_objects):
-            print("\t\t\tInput object #{0}: {1}".format(idx, input_object))
+            print('\t\t\tInput object #{0}: {1}'.format(idx, input_object))
             if isinstance(input_object, unreal.HoudiniPublicAPICurveInputObject):
-                print("\t\t\tbClosed: {0}".format(input_object.is_closed()))
-                print("\t\t\tCurveMethod: {0}".format(input_object.get_curve_method()))
-                print("\t\t\tCurveType: {0}".format(input_object.get_curve_type()))
-                print("\t\t\tReversed: {0}".format(input_object.is_reversed()))
-                print("\t\t\tCurvePoints: {0}".format(input_object.get_curve_points()))
+                print('\t\t\tbClosed: {0}'.format(input_object.is_closed()))
+                print('\t\t\tCurveMethod: {0}'.format(input_object.get_curve_method()))
+                print('\t\t\tCurveType: {0}'.format(input_object.get_curve_type()))
+                print('\t\t\tReversed: {0}'.format(input_object.is_reversed()))
+                print('\t\t\tCurvePoints: {0}'.format(input_object.get_curve_points()))
 
 
 def print_inputs(in_wrapper):
-    print("print_inputs")
+    print('print_inputs')
 
     # Unbind from the delegate
     in_wrapper.on_post_processing_delegate.remove_callable(print_inputs)
@@ -132,19 +128,19 @@ def print_inputs(in_wrapper):
     parm_inputs = in_wrapper.get_input_parameters()
 
     if not node_inputs:
-        print("No node inputs found!")
+        print('No node inputs found!')
     else:
-        print("Number of node inputs: {0}".format(len(node_inputs)))
+        print('Number of node inputs: {0}'.format(len(node_inputs)))
         for input_index, input_wrapper in node_inputs.items():
-            print("\tInput index: {0}".format(input_index))
+            print('\tInput index: {0}'.format(input_index))
             print_api_input(input_wrapper)
 
     if not parm_inputs:
-        print("No parameter inputs found!")
+        print('No parameter inputs found!')
     else:
-        print("Number of parameter inputs: {0}".format(len(parm_inputs)))
+        print('Number of parameter inputs: {0}'.format(len(parm_inputs)))
         for parm_name, input_wrapper in parm_inputs.items():
-            print("\tInput parameter name: {0}".format(parm_name))
+            print('\tInput parameter name: {0}'.format(parm_name))
             print_api_input(input_wrapper)
 
 
@@ -165,5 +161,5 @@ def run():
     _g_wrapper2.on_post_processing_delegate.add_callable(print_inputs)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     run()

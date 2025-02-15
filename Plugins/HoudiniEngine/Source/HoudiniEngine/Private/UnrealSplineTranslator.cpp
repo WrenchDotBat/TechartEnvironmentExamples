@@ -59,8 +59,7 @@ FUnrealSplineTranslator::CreateInputNodeForSplineComponent(
 	FUnrealObjectInputIdentifier Identifier;
 	FUnrealObjectInputHandle ParentHandle;
 	HAPI_NodeId ParentNodeId = -1;
-	const bool bUseRefCountedInputSystem = FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled();
-	if (bUseRefCountedInputSystem)
+
 	{
 		// Creates this input's identifier and input options
 		FUnrealObjectInputOptions Options;
@@ -165,8 +164,7 @@ FUnrealSplineTranslator::CreateInputNodeForSplineComponent(
 	// Currently, we must create legacy curves when using the new input system
 	// as the new HAPI_CreateInputCurveNode function does not support choosing a parent node!
 	bool bUseLegacy = bInUseLegacyInputCurves;
-	if (bUseRefCountedInputSystem)
-		bUseLegacy = true;
+	bUseLegacy = true;
 
 	if (!FHoudiniSplineTranslator::HapiCreateCurveInputNodeForData(
 		CreatedInputNodeId,
@@ -213,7 +211,7 @@ FUnrealSplineTranslator::CreateInputNodeForSplineComponent(
 	if (NeedToCommit) 
 	{
 		// We successfully added tags to the geo, so we need to commit the changes
-		if (HAPI_RESULT_SUCCESS != FHoudiniApi::CommitGeo(FHoudiniEngine::Get().GetSession(), CreatedInputNodeId))
+		if (HAPI_RESULT_SUCCESS != FHoudiniEngineUtils::HapiCommitGeo(CreatedInputNodeId))
 			HOUDINI_LOG_WARNING(TEXT("Could not create groups for the spline input's tags!"));
 
 		// And cook it with refinement enabled
@@ -228,7 +226,6 @@ FUnrealSplineTranslator::CreateInputNodeForSplineComponent(
 
 	// Get our parent OBJ NodeID
 	HAPI_NodeId InputObjectNodeId = FHoudiniEngineUtils::HapiGetParentNodeId(CreatedInputNodeId);
-	if (bUseRefCountedInputSystem)
 	{
 		FUnrealObjectInputHandle Handle;
 		if (FUnrealObjectInputUtils::AddNodeOrUpdateNode(Identifier, CreatedInputNodeId, Handle, InputObjectNodeId, nullptr, bInputNodesCanBeDeleted))

@@ -100,7 +100,7 @@ struct FHoudiniHeightFieldPartData
 	int GeoId = 0;
 	int PartId = 0;
 
-    // The Edit Layer name to use (Empty if applied to a landscape without edit layers)
+    // The Edit Layer name to use. 
     FString UnrealLayerName;
 
     // Target layer, eg. "height" or a layer associated with a material.
@@ -139,9 +139,6 @@ struct FHoudiniHeightFieldPartData
     // Whether to treast data as zero to one.
     bool bIsUnitData;
 
-    // Actual data of the height field, fetch from Houdini.
-    TUniquePtr<FHoudiniHeightFieldData> CachedData;
-
     // Houdini Tile Dimensions.
     TOptional<FHoudiniTileInfo> TileInfo;
 
@@ -168,6 +165,9 @@ struct FHoudiniHeightFieldPartData
 
     // PropertyAttributes
     TArray<FHoudiniGenericAttribute> PropertyAttributes;
+
+    // Whether or not to normalize paint layers that fall outside of the range 0 to 1.
+    bool bNormalizePaintLayers = false;
 
 };
 
@@ -235,15 +235,26 @@ struct HOUDINIENGINE_API FHoudiniLandscapeUtils
 
 	static TArray<uint16> QuantizeNormalizedDataTo16Bit(const TArray<float>& Data);
 
-    static float GetLandscapeHeightRangeInCM(ALandscape& Landscape);
+    static float GetLandscapeHeightRangeInCM(const ALandscape& Landscape);
 
-    static TArray<uint16> GetHeightData(ALandscape* Landscape, const FHoudiniExtents& Extents, FLandscapeLayer* EditLayer);
+    static TArray<uint16> GetHeightData(
+		ALandscape* Landscape,
+		const FHoudiniExtents& Extents,
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
+		const FLandscapeLayer* EditLayer);
+#else
+		FLandscapeLayer* EditLayer);
+#endif
 
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
+    static const FLandscapeLayer* GetEditLayer(ALandscape* Landscape, const FName& LayerName);
+    static const FLandscapeLayer* GetOrCreateEditLayer(ALandscape* Landscape, const FName& LayerName);
+    static const FLandscapeLayer* MoveEditLayerAfter(ALandscape* Landscape, const FName& LayerName, const FName& AfterLayerName);
+#else
     static FLandscapeLayer* GetEditLayer(ALandscape* Landscape, const FName& LayerName);
-
     static FLandscapeLayer* GetOrCreateEditLayer(ALandscape* Landscape, const FName& LayerName);
-
     static FLandscapeLayer* MoveEditLayerAfter(ALandscape* Landscape, const FName& LayerName, const FName& AfterLayerName);
+#endif
 
 	static TArray<uint8_t> GetLayerData(ALandscape* Landscape, const FHoudiniExtents& Extents, const FName& EditLayerName, const FName& TargetLayerName);
 
@@ -255,15 +266,15 @@ struct HOUDINIENGINE_API FHoudiniLandscapeUtils
             UWorld* World, 
             const TArray<ALandscapeProxy*>& LandscapeInputs);
 
-    static bool CalcLandscapeSizeFromHeightFieldSize(const int32 ProposedUnrealSizeX, const int32 ProposedUnrealSizeY, FHoudiniLandscapeCreationInfo& Info);
+    static bool CalcLandscapeSizeFromHeightFieldSize(int32 ProposedUnrealSizeX, int32 ProposedUnrealSizeY, FHoudiniLandscapeCreationInfo& Info);
 
-    static void CreateDefaultHeightField(ALandscape* LandscapeActor, const FHoudiniLandscapeCreationInfo& Info);
+    static void ImportLandscape(ALandscape* LandscapeActor, const FHoudiniLandscapeCreationInfo& Info, const TArray<uint16> & Values);
 
     static ALandscapeProxy* FindTargetLandscapeProxy(const FString& ActorName, UWorld* World, const TArray<ALandscapeProxy*>& LandscapeInputs);
 
     static FHoudiniHeightFieldPartData* GetPartWithHeightData(TMap<FString, FHoudiniHeightFieldPartData*>& Parts);
 
-    static FTransform GetHeightFieldTransformInUnrealSpace(const FHoudiniVolumeInfo& VolumeInfo);
+    static FTransform GetHeightFieldTransformInUnrealSpace(const FHoudiniVolumeInfo& VolumeInfo, const FIntPoint& UnrealDimensions);
 
     static UMaterialInterface* AssignGraphicsMaterialsToLandscape(
 				ALandscapeProxy* LandscapeProxy, 
@@ -287,12 +298,17 @@ struct HOUDINIENGINE_API FHoudiniLandscapeUtils
 
     static FHoudiniExtents GetExtents(const ALandscape* TargetLandscape, const FHoudiniHeightFieldData& HeightFieldData);
 
-	static FHoudiniHeightFieldData FetchVolumeInUnrealSpace(const FHoudiniGeoPartObject& HeightField, bool bTransposeData);
+	static FHoudiniHeightFieldData FetchVolumeInUnrealSpace(
+			const FHoudiniGeoPartObject& HeightField, 
+            const FIntPoint & UnrealLandscapeDimensions,
+            bool bFetchData);
 
     static FIntPoint GetVolumeDimensionsInUnrealSpace(const FHoudiniGeoPartObject& HeightField);
 
     static FHoudiniHeightFieldData ReDimensionLandscape(const FHoudiniHeightFieldData& HeightField, FIntPoint NewDimensions);
-    
+
+    static void TransposeValues(TArray<float> & Values, const FIntPoint & Dimensions);
+
     static FHoudiniMinMax GetHeightFieldRange(const FHoudiniHeightFieldData& HeightField);
 
     static float GetAbsRange(const FHoudiniMinMax& Range, float MaxUsableRange);
@@ -329,4 +345,9 @@ struct HOUDINIENGINE_API FHoudiniLandscapeUtils
     // Apply the segments to the specified edit layers per landscape.
     static bool ApplySegmentsToLandscapeEditLayers(
         const TMap<TTuple<ALandscape*, FName>, FHoudiniLandscapeSplineApplyLayerData>& InSegmentsToApplyToLayers);
+
+    static bool NormalizePaintLayers(TArray<float> & Data, bool bNormalize);
+
+    static TArray<uint16> ConvertHeightFieldData(const ALandscape* LandscapeActor, const TArray<float>& Values);
+
 };

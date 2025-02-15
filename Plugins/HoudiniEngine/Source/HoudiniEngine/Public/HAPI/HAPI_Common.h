@@ -28,6 +28,8 @@
 
 #define HAPI_INVALID_PARM_ID                -1
 
+#define HAPI_MAX_NUM_CONNECTIONS            128
+
 /// Common Default Attributes' Names
 /// @{
 #define HAPI_ATTRIB_POSITION                "P"
@@ -80,8 +82,8 @@
 /// [HAPI_CACHE]
 /// Common cache names. You can see these same cache names in the
 /// Cache Manager window in Houdini (Windows > Cache Manager).
-#define HAPI_CACHE_COP_COOK                 "COP Cook Cache"
-#define HAPI_CACHE_COP_FLIPBOOK             "COP Flipbook Cache"
+#define HAPI_CACHE_COP2_COOK                 "COP Cook Cache"
+#define HAPI_CACHE_COP2_FLIPBOOK             "COP Flipbook Cache"
 #define HAPI_CACHE_IMAGE                    "Image Cache"
 #define HAPI_CACHE_OBJ                      "Object Transform Cache"
 #define HAPI_CACHE_GL_TEXTURE               "OpenGL Texture Cache"
@@ -118,17 +120,17 @@
 #endif // __cplusplus
 
 // x-bit Integers
-// Thrift doesn't support unsigned integers, so we cast it as a 16-bit int, but only
-// for automated code generation
+// Thrift doesn't support unsigned integers, so we cast it as a signed 8-bit int, but only
+// for automated code generation and thrift
 #ifdef HAPI_AUTOGEN
     typedef signed char int8_t;
     typedef short int16_t;
     typedef long long int64_t;
-    typedef short HAPI_UInt8; // 16-bit type for thrift
+    typedef signed char HAPI_UInt8; // signed 8-bit int for thrift to avoid overflow 
 #else
     #include <stdint.h>
     #ifdef HAPI_THRIFT_ABI
-        typedef int16_t HAPI_UInt8; 
+        typedef int8_t HAPI_UInt8; // signed 8-bit int for thrift to avoid overflow 
     #else
         typedef uint8_t HAPI_UInt8;
         HAPI_STATIC_ASSERT(sizeof(HAPI_UInt8) == 1, unsupported_size_of_uint8);
@@ -195,6 +197,8 @@ enum HAPI_License
     HAPI_LICENSE_HOUDINI_ENGINE_INDIE,
     HAPI_LICENSE_HOUDINI_INDIE,
     HAPI_LICENSE_HOUDINI_ENGINE_UNITY_UNREAL,
+    HAPI_LICENSE_HOUDINI_EDUCATION,
+    HAPI_LICENSE_HOUDINI_ENGINE_EDUCATION,
     HAPI_LICENSE_MAX
 };
 HAPI_C_ENUM_TYPEDEF( HAPI_License )
@@ -224,6 +228,14 @@ enum HAPI_StatusVerbosity
     HAPI_STATUSVERBOSITY_MESSAGES = HAPI_STATUSVERBOSITY_2,
 };
 HAPI_C_ENUM_TYPEDEF( HAPI_StatusVerbosity )
+
+enum HAPI_JobStatus
+{
+    HAPI_JOB_STATUS_RUNNING,
+    HAPI_JOB_STATUS_IDLE,
+    HAPI_JOB_STATUS_MAX
+};
+HAPI_C_ENUM_TYPEDEF( HAPI_JobStatus )
 
 enum HAPI_Result
 {
@@ -425,6 +437,7 @@ enum HAPI_PrmScriptType
     HAPI_PRM_SCRIPT_TYPE_COLOR,
     ///  "color4", "rgba"
     HAPI_PRM_SCRIPT_TYPE_COLOR4,
+    HAPI_PRM_SCRIPT_TYPE_HUECIRCLE,
     HAPI_PRM_SCRIPT_TYPE_OPPATH,
     HAPI_PRM_SCRIPT_TYPE_OPLIST,
     HAPI_PRM_SCRIPT_TYPE_OBJECT,
@@ -535,7 +548,9 @@ enum HAPI_NodeFlags
     /// All TOP nodes except schedulers
     HAPI_NODEFLAGS_TOP_NONSCHEDULER = 1 << 13,
 
-    HAPI_NODEFLAGS_NON_BYPASS   = 1 << 14 /// Nodes that are not bypassed
+    /// Recursive Flag
+    /// Nodes that are not bypassed
+    HAPI_NODEFLAGS_NON_BYPASS   = 1 << 14 
 };
 HAPI_C_ENUM_TYPEDEF( HAPI_NodeFlags )
 typedef int HAPI_NodeFlagsBits;
@@ -623,6 +638,7 @@ enum HAPI_StorageType
     HAPI_STORAGETYPE_UINT8,
     HAPI_STORAGETYPE_INT8,
     HAPI_STORAGETYPE_INT16,
+    HAPI_STORAGETYPE_DICTIONARY,
 
     HAPI_STORAGETYPE_INT_ARRAY,
     HAPI_STORAGETYPE_INT64_ARRAY,
@@ -632,6 +648,7 @@ enum HAPI_StorageType
     HAPI_STORAGETYPE_UINT8_ARRAY,
     HAPI_STORAGETYPE_INT8_ARRAY,
     HAPI_STORAGETYPE_INT16_ARRAY,
+    HAPI_STORAGETYPE_DICTIONARY_ARRAY,
 
     HAPI_STORAGETYPE_MAX
 };
@@ -865,7 +882,7 @@ enum HAPI_CacheProperty
     HAPI_CACHEPROP_MAX, /// Max cache memory limit in MB.
 
     /// How aggressive to cull memory. This only works for:
-    ///     - ::HAPI_CACHE_COP_COOK where:
+    ///     - ::HAPI_CACHE_COP2_COOK where:
     ///         0   ->  Never reduce inactive cache.
     ///         1   ->  Always reduce inactive cache.
     ///     - ::HAPI_CACHE_OBJ where:
@@ -959,6 +976,8 @@ enum HAPI_PDG_EventType
     HAPI_PDG_EVENT_NODE_CONNECT,
     /// Sent when a node is disconnected from another node
     HAPI_PDG_EVENT_NODE_DISCONNECT,
+    /// Sent when a node cooks for the first time
+    HAPI_PDG_EVENT_NODE_FIRST_COOK,
 
     /// Deprecated
     HAPI_PDG_EVENT_WORKITEM_SET_INT,
@@ -968,6 +987,8 @@ enum HAPI_PDG_EventType
     HAPI_PDG_EVENT_WORKITEM_SET_STRING,
     /// Deprecated
     HAPI_PDG_EVENT_WORKITEM_SET_FILE,
+    /// Deprecated
+    HAPI_PDG_EVENT_WORKITEM_SET_DICT,
     /// Deprecated
     HAPI_PDG_EVENT_WORKITEM_SET_PYOBJECT,
     /// Deprecated
@@ -1009,7 +1030,7 @@ enum HAPI_PDG_EventType
     /// Sent when a node finished generating
     HAPI_PDG_EVENT_NODE_GENERATED,
 
-    HAPI_PDG_CONTEXT_EVENTS
+    HAPI_PDG_CONTEXT_EVENTS,
 };
 HAPI_C_ENUM_TYPEDEF( HAPI_PDG_EventType )
 
@@ -1031,6 +1052,21 @@ HAPI_C_ENUM_TYPEDEF( HAPI_PDG_WorkItemState )
 
 /// Backwards compatibility for HAPI_PDG_WorkitemState
 typedef HAPI_PDG_WorkItemState HAPI_PDG_WorkitemState;
+
+enum HAPI_TCP_PortType
+{
+    HAPI_TCP_PORT_ANY,
+    HAPI_TCP_PORT_RANGE,
+    HAPI_TCP_PORT_LIST
+};
+HAPI_C_ENUM_TYPEDEF( HAPI_TCP_PortType )
+
+enum HAPI_ThriftSharedMemoryBufferType
+{
+    HAPI_THRIFT_SHARED_MEMORY_FIXED_LENGTH_BUFFER,
+    HAPI_THRIFT_SHARED_MEMORY_RING_BUFFER
+};
+HAPI_C_ENUM_TYPEDEF( HAPI_ThriftSharedMemoryBufferType )
 
 /////////////////////////////////////////////////////////////////////////////
 // Main API Structs
@@ -1077,6 +1113,33 @@ struct HAPI_API HAPI_Session
 };
 HAPI_C_STRUCT_TYPEDEF( HAPI_Session )
 
+/// Configurations for sessions
+struct HAPI_API HAPI_SessionInfo
+{
+    /// The number of subconnections in this session
+    int connectionCount;
+
+    /// Specification for the port numbers
+    HAPI_TCP_PortType portType;
+
+    /// Specifies a range of port numbers, [minPort, maxPort]
+    int minPort;
+    int maxPort;
+
+    /// Specifies a list of port numbers
+    int ports[ HAPI_MAX_NUM_CONNECTIONS ];
+
+    // Must match the buffer type passed to the HARS executable through the
+    // command line or ::HAPI_StartThriftSharedMemoryServer
+    HAPI_ThriftSharedMemoryBufferType sharedMemoryBufferType;
+
+    // Must match the buffer size passed to the HARS executable through the
+    // command line or ::HAPI_StartThriftSharedMemoryServer. This is the size of
+    // the shared memory buffer in megabytes (MB).
+    HAPI_Int64 sharedMemoryBufferSize;
+};
+HAPI_C_STRUCT_TYPEDEF( HAPI_SessionInfo )
+
 /// Options to configure a Thrift server being started from HARC.
 struct HAPI_API HAPI_ThriftServerOptions
 {
@@ -1091,6 +1154,18 @@ struct HAPI_API HAPI_ThriftServerOptions
 
     // Specifies the maximum status verbosity that will be logged.
     HAPI_StatusVerbosity verbosity;
+
+    // Only used when starting a Thrift shared memory server. This controls the
+    // type of buffer that is used in the underlying communication protocol. A
+    // fixed length buffer is faster but the data passed to any single HAPI API
+    // call cannot exceed the total length of the buffer. A ring buffer is
+    // slower but has no limitations on the size of the data.
+    HAPI_ThriftSharedMemoryBufferType sharedMemoryBufferType;
+
+    // Only used when starting a Thrift shared memory server. This variable
+    // specifies the size in megabytes (MB) of the allocated shared memory
+    // buffer.
+    HAPI_Int64 sharedMemoryBufferSize;
 };
 HAPI_C_STRUCT_TYPEDEF( HAPI_ThriftServerOptions )
 

@@ -32,6 +32,87 @@
 
 #include "UObject/UnrealType.h"
 
+// Generic helpers to avoid logic duplication across ramp parameters
+class HoudiniParameterRampStatics
+{
+public:
+	template <typename ParamT, typename PointT>
+	static void SyncCachedPoints(ParamT* Param);
+};
+
+
+template <typename ParamT, typename PointT>
+void
+HoudiniParameterRampStatics::SyncCachedPoints(ParamT* Param)
+{
+	int32 Idx = 0;
+
+	while (Idx < Param->CachedPoints.Num() && Idx < Param->Points.Num())
+	{
+		TObjectPtr<PointT> &CachedPoint = Param->CachedPoints[Idx];
+		TObjectPtr<PointT> &CurrentPoint = Param->Points[Idx];
+
+		if (!CachedPoint || !CurrentPoint)
+			continue;
+
+		if (CachedPoint->GetPosition() != CurrentPoint->GetPosition()) 
+		{
+			if (CurrentPoint->PositionParentParm) 
+			{
+				CurrentPoint->SetPosition(CachedPoint->GetPosition());
+				CurrentPoint->PositionParentParm->MarkChanged(true);
+			}
+		}
+
+		if (CachedPoint->GetValue() != CurrentPoint->GetValue()) 
+		{
+			if (CurrentPoint->ValueParentParm) 
+			{
+				CurrentPoint->SetValue(CachedPoint->GetValue());
+				CurrentPoint->ValueParentParm->MarkChanged(true);
+			}
+		}
+
+		if (CachedPoint->GetInterpolation() != CurrentPoint->GetInterpolation()) 
+		{
+			if (CurrentPoint->InterpolationParentParm) 
+			{
+				CurrentPoint->SetInterpolation(CachedPoint->GetInterpolation());
+				CurrentPoint->InterpolationParentParm->MarkChanged(true);
+			}
+		}
+
+		Idx += 1;
+	}
+
+	// Insert points
+	for (int32 IdxCachedPointLeft = Idx; IdxCachedPointLeft < Param->CachedPoints.Num(); ++IdxCachedPointLeft) 
+	{
+		TObjectPtr<PointT> &CachedPoint = Param->CachedPoints[IdxCachedPointLeft];
+		if (!CachedPoint)
+			continue;
+
+		Param->CreateInsertEvent(CachedPoint->Position, CachedPoint->Value, CachedPoint->Interpolation);
+
+		Param->MarkChanged(true);
+	}
+
+	// Remove points
+	for (int32 IdxCurrentPointLeft = Idx; IdxCurrentPointLeft < Param->Points.Num(); ++IdxCurrentPointLeft) 
+	{
+		Param->RemoveElement(IdxCurrentPointLeft);
+
+		TObjectPtr<PointT> Point = Param->Points[IdxCurrentPointLeft];
+
+		if (!Point)
+			continue;
+
+		Param->CreateDeleteEvent(Point->InstanceIndex);
+
+		Param->MarkChanged(true);
+	}
+}
+
 
 void 
 UHoudiniParameterRampFloatPoint::SetPosition(const float InPosition)
@@ -289,7 +370,8 @@ UHoudiniParameterRampFloat::CopyStateFrom(
 	Points = PrevPoints;
 	
 	
-	auto CopyPointsStateFn = [InClearFlags, InSetFlags] (TArray<UHoudiniParameterRampFloatPoint*>& FromArray, TArray<UHoudiniParameterRampFloatPoint*>& ToArray, UObject* NewOuter)
+	auto CopyPointsStateFn = [InClearFlags, InSetFlags] (TArray<TObjectPtr<UHoudiniParameterRampFloatPoint>>& FromArray, 
+														TArray<TObjectPtr<UHoudiniParameterRampFloatPoint>>& ToArray, UObject* NewOuter)
 	{
 		const int32 NumPts = FromArray.Num();
 
@@ -355,72 +437,7 @@ UHoudiniParameterRampFloat::RemapParameters(const TMap<UHoudiniParameter*, UHoud
 void
 UHoudiniParameterRampFloat::SyncCachedPoints()
 {
-	int32 Idx = 0;
-
-	while (Idx < CachedPoints.Num() && Idx < Points.Num())
-	{
-		UHoudiniParameterRampFloatPoint* &CachedPoint = CachedPoints[Idx];
-		UHoudiniParameterRampFloatPoint* &CurrentPoint = Points[Idx];
-
-		if (!CachedPoint || !CurrentPoint)
-			continue;
-
-		if (CachedPoint->GetPosition() != CurrentPoint->GetPosition()) 
-		{
-			if (CurrentPoint->PositionParentParm) 
-			{
-				CurrentPoint->SetPosition(CachedPoint->GetPosition());
-				CurrentPoint->PositionParentParm->MarkChanged(true);
-			}
-		}
-
-		if (CachedPoint->GetValue() != CurrentPoint->GetValue()) 
-		{
-			if (CurrentPoint->ValueParentParm) 
-			{
-				CurrentPoint->SetValue(CachedPoint->GetValue());
-				CurrentPoint->ValueParentParm->MarkChanged(true);
-			}
-		}
-
-		if (CachedPoint->GetInterpolation() != CurrentPoint->GetInterpolation()) 
-		{
-			if (CurrentPoint->InterpolationParentParm) 
-			{
-				CurrentPoint->SetInterpolation(CachedPoint->GetInterpolation());
-				CurrentPoint->InterpolationParentParm->MarkChanged(true);
-			}
-		}
-
-		Idx += 1;
-	}
-
-	// Insert points
-	for (int32 IdxCachedPointLeft = Idx; IdxCachedPointLeft < CachedPoints.Num(); ++IdxCachedPointLeft) 
-	{
-		UHoudiniParameterRampFloatPoint *&CachedPoint = CachedPoints[IdxCachedPointLeft];
-		if (!CachedPoint)
-			continue;
-
-		CreateInsertEvent(CachedPoint->Position, CachedPoint->Value, CachedPoint->Interpolation);
-
-		MarkChanged(true);
-	}
-
-	// Remove points
-	for (int32 IdxCurrentPointLeft = Idx; IdxCurrentPointLeft < Points.Num(); ++IdxCurrentPointLeft) 
-	{
-		RemoveElement(IdxCurrentPointLeft);
-
-		UHoudiniParameterRampFloatPoint* Point = Points[IdxCurrentPointLeft];
-
-		if (!Point)
-			continue;
-
-		CreateDeleteEvent(Point->InstanceIndex);
-
-		MarkChanged(true);
-	}
+	HoudiniParameterRampStatics::SyncCachedPoints<UHoudiniParameterRampFloat, UHoudiniParameterRampFloatPoint>(this);
 }
 
 
@@ -681,7 +698,8 @@ UHoudiniParameterRampColor::CopyStateFrom(UHoudiniParameter * InParameter, bool 
 	Points = PrevPoints;
 	
 	
-	auto CopyPointsStateFn = [InClearFlags, InSetFlags] (TArray<UHoudiniParameterRampColorPoint*>& FromArray, TArray<UHoudiniParameterRampColorPoint*>& ToArray, UObject* NewOuter)
+	auto CopyPointsStateFn = [InClearFlags, InSetFlags] (
+	TArray<TObjectPtr<UHoudiniParameterRampColorPoint>>& FromArray, TArray<TObjectPtr<UHoudiniParameterRampColorPoint>>& ToArray, UObject* NewOuter)
 	{
 		const int32 NumPts = FromArray.Num();
 
@@ -881,6 +899,79 @@ UHoudiniParameterRampColor::UpdatePointsArray(const TArray<UHoudiniParameter*>& 
 	return false;
 }
 
+void UHoudiniParameterRampColor::SyncCachedPoints()
+{
+	HoudiniParameterRampStatics::SyncCachedPoints<UHoudiniParameterRampColor, UHoudiniParameterRampColorPoint>(this);
+}
+
+void UHoudiniParameterRampColor::CreateInsertEvent(const float& InPosition, const FLinearColor& InValue,
+	const EHoudiniRampInterpolationType& InInterp)
+{
+	UHoudiniParameterRampModificationEvent* InsertEvent = NewObject<UHoudiniParameterRampModificationEvent>(
+		this, UHoudiniParameterRampModificationEvent::StaticClass());
+
+	if (!InsertEvent)
+		return;
+
+	InsertEvent->SetColorRampEvent();
+	InsertEvent->SetInsertEvent();
+	InsertEvent->InsertPosition = InPosition;
+	InsertEvent->InsertColor = InValue;
+	InsertEvent->InsertInterpolation = InInterp;
+
+	ModificationEvents.Add(InsertEvent);
+}
+
+void UHoudiniParameterRampColor::CreateDeleteEvent(const int32& InDeleteIndex)
+{
+	UHoudiniParameterRampModificationEvent* DeleteEvent = NewObject<UHoudiniParameterRampModificationEvent>(
+		this, UHoudiniParameterRampModificationEvent::StaticClass());
+
+	if (!DeleteEvent)
+		return;
+
+	DeleteEvent->SetColorRampEvent();
+	DeleteEvent->SetDeleteEvent();
+	DeleteEvent->DeleteInstanceIndex = InDeleteIndex;
+
+	ModificationEvents.Add(DeleteEvent);
+}
+
+
+void
+UHoudiniParameterRampColor::SetNumCachedPoints(const int32 NumPoints)
+{
+	CachedPoints.SetNum(NumPoints);
+}
+
+
+bool
+UHoudiniParameterRampColor::SetCachedPointAtIndex(const int32 InIndex, const float InPosition, const FLinearColor& InValue,
+	const EHoudiniRampInterpolationType InInterpolation)
+{
+	// Set points directly in the cache
+	if (!CachedPoints.IsValidIndex(InIndex))
+	{
+		return false;
+	}
+
+	UHoudiniParameterRampColorPoint* Point = CachedPoints[InIndex];
+	if (!IsValid(Point))
+	{
+		// Create a new point at this index
+		Point = NewObject<UHoudiniParameterRampColorPoint>(this, UHoudiniParameterRampColorPoint::StaticClass());
+		if (!Point)
+			return false;
+		CachedPoints[InIndex] = Point;
+	}
+	Point->Position = InPosition;
+	Point->Value = InValue;
+	Point->Interpolation = InInterpolation == EHoudiniRampInterpolationType::InValid ? EHoudiniRampInterpolationType::LINEAR : InInterpolation;
+
+	return true;
+}
+
+
 bool
 UHoudiniParameterRampColor::IsDefault() const 
 {
@@ -975,4 +1066,45 @@ UHoudiniParameterRampFloat::SetDefaultValues()
 
 	NumDefaultPoints = Points.Num();
 
+}
+
+void UHoudiniParameterRampColor::OnPreCook()
+{
+	Super::OnPreCook();
+
+	if (bCaching)
+	{
+		SyncCachedPoints();
+		bCaching = false;
+	}
+}
+
+void UHoudiniParameterRampFloat::SetNumCachedPoints(const int32 NumPoints)
+{
+	CachedPoints.SetNum(NumPoints);
+}
+
+bool UHoudiniParameterRampFloat::SetCachedPointAtIndex(const int32 InIndex, const float InPosition, const float InValue,
+	const EHoudiniRampInterpolationType InInterpolation)
+{
+	// Set points directly in the cache
+	if (!CachedPoints.IsValidIndex(InIndex))
+	{
+		return false;
+	}
+
+	UHoudiniParameterRampFloatPoint* Point = CachedPoints[InIndex];
+	if (!IsValid(Point))
+	{
+		// Create a new point at this index
+		Point = NewObject<UHoudiniParameterRampFloatPoint>(this, UHoudiniParameterRampFloatPoint::StaticClass());
+		if (!Point)
+			return false;
+		CachedPoints[InIndex] = Point;
+	}
+	Point->Position = InPosition;
+	Point->Value = InValue;
+	Point->Interpolation = InInterpolation == EHoudiniRampInterpolationType::InValid ? EHoudiniRampInterpolationType::LINEAR : InInterpolation;
+
+	return true;
 }

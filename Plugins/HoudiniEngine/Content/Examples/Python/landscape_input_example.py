@@ -33,7 +33,7 @@ _g_wrapper = None
 
 
 def get_test_hda_path():
-    return "/HoudiniEngine/Examples/hda/hilly_landscape_erode_1_0.hilly_landscape_erode_1_0"
+    return '/HoudiniEngine/Examples/hda/hilly_landscape_erode_1_0.hilly_landscape_erode_1_0'
 
 
 def get_test_hda():
@@ -41,34 +41,26 @@ def get_test_hda():
 
 
 def load_map():
-    return unreal.EditorLoadingAndSavingUtils.load_map(
-        "/HoudiniEngine/Examples/Maps/LandscapeInputExample.LandscapeInputExample"
-    )
-
+    return unreal.EditorLoadingAndSavingUtils.load_map('/HoudiniEngine/Examples/Maps/LandscapeInputExample.LandscapeInputExample')
 
 def get_landscape():
-    return unreal.EditorLevelLibrary.get_actor_reference("PersistentLevel.Landscape_0")
-
+    return unreal.EditorLevelLibrary.get_actor_reference('PersistentLevel.Landscape_0')
 
 def configure_inputs(in_wrapper):
-    print("configure_inputs")
+    print('configure_inputs')
 
     # Unbind from the delegate
     in_wrapper.on_post_instantiation_delegate.remove_callable(configure_inputs)
 
     # Create a landscape input
-    landscape_input = in_wrapper.create_empty_input(
-        unreal.HoudiniPublicAPILandscapeInput
-    )
+    landscape_input = in_wrapper.create_empty_input(unreal.HoudiniPublicAPILandscapeInput)
     # Send landscapes as heightfields
-    landscape_input.landscape_export_type = (
-        unreal.HoudiniLandscapeExportType.HEIGHTFIELD
-    )
+    landscape_input.landscape_export_type = unreal.HoudiniLandscapeExportType.HEIGHTFIELD
     # Keep world transform
     landscape_input.keep_world_transform = True
     # Set the input objects/assets for this input
     landscape_object = get_landscape()
-    landscape_input.set_input_objects((landscape_object,))
+    landscape_input.set_input_objects((landscape_object, ))
     # copy the input data to the HDA as node input 0
     in_wrapper.set_input_at_index(0, landscape_input)
     # We can now discard the API input object
@@ -76,52 +68,28 @@ def configure_inputs(in_wrapper):
 
 
 def print_api_input(in_input):
-    print("\t\tInput type: {0}".format(in_input.__class__))
-    print("\t\tbKeepWorldTransform: {0}".format(in_input.keep_world_transform))
+    print('\t\tInput type: {0}'.format(in_input.__class__))
+    print('\t\tbKeepWorldTransform: {0}'.format(in_input.keep_world_transform))
     if isinstance(in_input, unreal.HoudiniPublicAPILandscapeInput):
-        print(
-            "\t\tbLandscapeAutoSelectComponent: {0}".format(
-                in_input.landscape_auto_select_component
-            )
-        )
-        print(
-            "\t\tbLandscapeExportLighting: {0}".format(
-                in_input.landscape_export_lighting
-            )
-        )
-        print(
-            "\t\tbLandscapeExportMaterials: {0}".format(
-                in_input.landscape_export_materials
-            )
-        )
-        print(
-            "\t\tbLandscapeExportNormalizedUVs: {0}".format(
-                in_input.landscape_export_normalized_u_vs
-            )
-        )
-        print(
-            "\t\tbLandscapeExportSelectionOnly: {0}".format(
-                in_input.landscape_export_selection_only
-            )
-        )
-        print(
-            "\t\tbLandscapeExportTileUVs: {0}".format(
-                in_input.landscape_export_tile_u_vs
-            )
-        )
-        print("\t\tbLandscapeExportType: {0}".format(in_input.landscape_export_type))
+        print('\t\tbLandscapeAutoSelectComponent: {0}'.format(in_input.landscape_auto_select_component))
+        print('\t\tbLandscapeExportLighting: {0}'.format(in_input.landscape_export_lighting))
+        print('\t\tbLandscapeExportMaterials: {0}'.format(in_input.landscape_export_materials))
+        print('\t\tbLandscapeExportNormalizedUVs: {0}'.format(in_input.landscape_export_normalized_u_vs))
+        print('\t\tbLandscapeExportSelectionOnly: {0}'.format(in_input.landscape_export_selection_only))
+        print('\t\tbLandscapeExportTileUVs: {0}'.format(in_input.landscape_export_tile_u_vs))
+        print('\t\tbLandscapeExportType: {0}'.format(in_input.landscape_export_type))
 
     input_objects = in_input.get_input_objects()
     if not input_objects:
-        print("\t\tEmpty input!")
+        print('\t\tEmpty input!')
     else:
-        print("\t\tNumber of objects in input: {0}".format(len(input_objects)))
+        print('\t\tNumber of objects in input: {0}'.format(len(input_objects)))
         for idx, input_object in enumerate(input_objects):
-            print("\t\t\tInput object #{0}: {1}".format(idx, input_object))
+            print('\t\t\tInput object #{0}: {1}'.format(idx, input_object))
 
 
 def print_inputs(in_wrapper):
-    print("print_inputs")
+    print('print_inputs')
 
     # Unbind from the delegate
     in_wrapper.on_post_processing_delegate.remove_callable(print_inputs)
@@ -131,19 +99,19 @@ def print_inputs(in_wrapper):
     parm_inputs = in_wrapper.get_input_parameters()
 
     if not node_inputs:
-        print("No node inputs found!")
+        print('No node inputs found!')
     else:
-        print("Number of node inputs: {0}".format(len(node_inputs)))
+        print('Number of node inputs: {0}'.format(len(node_inputs)))
         for input_index, input_wrapper in node_inputs.items():
-            print("\tInput index: {0}".format(input_index))
+            print('\tInput index: {0}'.format(input_index))
             print_api_input(input_wrapper)
 
     if not parm_inputs:
-        print("No parameter inputs found!")
+        print('No parameter inputs found!')
     else:
-        print("Number of parameter inputs: {0}".format(len(parm_inputs)))
+        print('Number of parameter inputs: {0}'.format(len(parm_inputs)))
         for parm_name, input_wrapper in parm_inputs.items():
-            print("\tInput parameter name: {0}".format(parm_name))
+            print('\tInput parameter name: {0}'.format(parm_name))
             print_api_input(input_wrapper)
 
 
@@ -164,5 +132,5 @@ def run():
     _g_wrapper.on_post_processing_delegate.add_callable(print_inputs)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     run()

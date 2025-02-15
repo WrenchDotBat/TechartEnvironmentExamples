@@ -99,7 +99,6 @@ bool FHoudiniEditorEquivalenceUtils::IsEquivalent(const UHoudiniAssetComponent *
 	// We change the temporary cook folder to organize the tests. Do not test this.
 	// Result &= TestExpressionError(IsEquivalent(A->TemporaryCookFolder, B->TemporaryCookFolder), Header, "TemporaryCookFolder");
 	// Result &= TestExpressionError(IsEquivalent(A->BakeFolder, B->BakeFolder), Header, "BakeFolder");
-	Result &= TestExpressionError(A->StaticMeshMethod == B->StaticMeshMethod, Header, "StaticMeshMethod");
 	Result &= TestExpressionError(IsEquivalent(A->StaticMeshGenerationProperties, B->StaticMeshGenerationProperties), Header, "StaticMeshGenerationProperties");
 	Result &= TestExpressionError(IsEquivalent(A->StaticMeshBuildSettings, B->StaticMeshBuildSettings), Header, "StaticMeshBuildSettings");
 	Result &= TestExpressionError(A->bOverrideGlobalProxyStaticMeshSettings == B->bOverrideGlobalProxyStaticMeshSettings, Header, "bOverrideGlobalProxyStaticMeshSettings");
@@ -187,9 +186,6 @@ bool FHoudiniEditorEquivalenceUtils::IsEquivalent(const UHoudiniAssetComponent *
 	// Skip refine meshes timer/delegate
 
 	// Skip bNoProxyMeshNextCookRequested
-
-	// Not sure if this is necessary:
-	Result &= TestExpressionError(A->InputPresets.Num() == B->InputPresets.Num(), Header, "InputPresets");
 
 	// Skip bBakeAfterNextCook
 
@@ -316,10 +312,12 @@ bool FHoudiniEditorEquivalenceUtils::IsEquivalent(const UHoudiniParameter* A, co
 		Result &= TestExpressionError(IsEquivalent(Cast<UHoudiniParameterMultiParm>(A), Cast<UHoudiniParameterMultiParm>(B)), Header, "Object cast");
 	else if (A->IsA(UHoudiniParameterOperatorPath::StaticClass()))
 		Result &= TestExpressionError(IsEquivalent(Cast<UHoudiniParameterOperatorPath>(A), Cast<UHoudiniParameterOperatorPath>(B)), Header, "Object cast");
+	/*
 	else if (A->IsA(UHoudiniParameterRampFloatPoint::StaticClass()))
 		Result &= TestExpressionError(IsEquivalent(Cast<UHoudiniParameterRampFloatPoint>(A), Cast<UHoudiniParameterRampFloatPoint>(B)), Header, "Object cast");
 	else if (A->IsA(UHoudiniParameterRampColorPoint::StaticClass()))
 		Result &= TestExpressionError(IsEquivalent(Cast<UHoudiniParameterRampColorPoint>(A), Cast<UHoudiniParameterRampColorPoint>(B)), Header, "Object cast");
+	*/
 	else if (A->IsA(UHoudiniParameterRampFloat::StaticClass()))
 		Result &= TestExpressionError(IsEquivalent(Cast<UHoudiniParameterRampFloat>(A), Cast<UHoudiniParameterRampFloat>(B)), Header, "Object cast");
 	else if (A->IsA(UHoudiniParameterRampColor::StaticClass()))
@@ -383,13 +381,6 @@ bool FHoudiniEditorEquivalenceUtils::IsEquivalent(const UHoudiniInput* A, const 
 	// Result &= TestExpressionError(A->bStaticMeshChanged == B->bStaticMeshChanged, Header, "bStaticMeshChanged");
 
 	// Skip EDITORONLYDATA (for simplicity)
-
-	Result &= TestExpressionError(A->AssetInputObjects.Num() == B->AssetInputObjects.Num(), Header, "AssetInputObjects.Num");
-	for (int i = 0; i < FMath::Min(A->AssetInputObjects.Num(), B->AssetInputObjects.Num()); i++)
-	{
-		Result &= TestExpressionError(IsEquivalent(A->AssetInputObjects[i], B->AssetInputObjects[i]), Header, "AssetInputObjects");
-	}
-
 	Result &= TestExpressionError(A->bInputAssetConnectedInHoudini == B->bInputAssetConnectedInHoudini, Header, "bInputAssetConnectedInHoudini");
 	
 	Result &= TestExpressionError(A->CurveInputObjects.Num() == B->CurveInputObjects.Num(), Header, "CurveInputObjects.Num");
@@ -404,12 +395,6 @@ bool FHoudiniEditorEquivalenceUtils::IsEquivalent(const UHoudiniInput* A, const 
 
 	Result &= TestExpressionError(InputSettingsA.bUseLegacyInputCurves == InputSettingsB.bUseLegacyInputCurves, Header, "bUseLegacyInputCurves");
 	
-	Result &= TestExpressionError(A->LandscapeInputObjects.Num() == B->LandscapeInputObjects.Num(), Header, "LandscapeInputObjects.Num");
-	for (int i = 0; i < FMath::Min(A->LandscapeInputObjects.Num(), B->LandscapeInputObjects.Num()); i++)
-	{
-		Result &= TestExpressionError(IsEquivalent(A->LandscapeInputObjects[i], B->LandscapeInputObjects[i]), Header, "LandscapeInputObjects");
-	}
-
 	// Result &= TestExpressionError(A->bLandscapeHasExportTypeChanged == B->bLandscapeHasExportTypeChanged, Header, "bLandscapeHasExportTypeChanged");
 
 	Result &= TestExpressionError(A->WorldInputObjects.Num() == B->WorldInputObjects.Num(), Header, "WorldInputObjects.Num");
@@ -427,12 +412,6 @@ bool FHoudiniEditorEquivalenceUtils::IsEquivalent(const UHoudiniInput* A, const 
 	Result &= TestExpressionError(A->bIsWorldInputBoundSelector == B->bIsWorldInputBoundSelector, Header, "bIsWorldInputBoundSelector");
 	Result &= TestExpressionError(A->bWorldInputBoundSelectorAutoUpdate == B->bWorldInputBoundSelectorAutoUpdate, Header, "bWorldInputBoundSelectorAutoUpdate");
 	Result &= TestExpressionError(FMath::IsNearlyEqual(InputSettingsA.UnrealSplineResolution, InputSettingsB.UnrealSplineResolution, FLOAT_TOLERANCE), Header, "UnrealSplineResolution");
-
-	Result &= TestExpressionError(A->SkeletalInputObjects.Num() == B->SkeletalInputObjects.Num(), Header, "SkeletalInputObjects.Num");
-	for (int i = 0; i < FMath::Min(A->SkeletalInputObjects.Num(), B->SkeletalInputObjects.Num()); i++)
-	{
-		Result &= TestExpressionError(IsEquivalent(A->SkeletalInputObjects[i], B->SkeletalInputObjects[i]), Header, "SkeletalInputObjects");
-	}
 
 	// Skip LastInsertedInputs
 	// Skip LastUndoDeletedInputs
@@ -1392,16 +1371,24 @@ bool FHoudiniEditorEquivalenceUtils::IsEquivalent(const UHoudiniParameterButtonS
 		return true;
 	}
 
-	Result &= TestExpressionError(A->Count == B->Count, Header, "Count");
-	Result &= TestExpressionError(A->Labels.Num() == B->Labels.Num(), Header, "Labels.Num");
-	for (int i = 0; i < FMath::Min(A->Labels.Num(), B->Labels.Num()); i++)
+	Result &= TestExpressionError(A->GetNumValues() == B->GetNumValues(), Header, "NumValues");
+	for (uint32 i = 0; i < FMath::Min(A->GetNumValues(), B->GetNumValues()); i++)
 	{
-		Result &= TestExpressionError(A->Labels[i].Equals(B->Labels[i]), Header, "Labels");
+		const FString* LabelA = A->GetStringLabelAt(i);
+		const FString* LabelB = B->GetStringLabelAt(i);
+
+		if (!LabelA || !LabelB)
+		{
+			Result = false;
+			continue;
+		}
+
+		Result &= TestExpressionError(LabelA->Equals(*LabelB), Header, "Labels");
 	}
-	Result &= TestExpressionError(A->Values.Num() == B->Values.Num(), Header, "Values.Num");
-	for (int i = 0; i < FMath::Min(A->Values.Num(), B->Values.Num()); i++)
+
+	for (uint32 i = 0; i < FMath::Min(A->GetNumValues(), B->GetNumValues()); i++)
 	{
-		Result &= TestExpressionError(A->Values[i] == B->Values[i], Header, "Values");
+		Result &= TestExpressionError(A->GetValueAt(i) == B->GetValueAt(i), Header, "Values");
 	}
 
 	return Result;

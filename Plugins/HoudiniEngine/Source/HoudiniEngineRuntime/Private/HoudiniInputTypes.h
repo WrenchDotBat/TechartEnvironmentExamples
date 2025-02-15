@@ -36,14 +36,12 @@
 class UHoudiniInput;
 
 // Maintain an iterable list of houdini input types
-static const EHoudiniInputType HoudiniInputTypeList[] = {
+static const EHoudiniInputType HoudiniInputTypeList[] = 
+{
 	EHoudiniInputType::Geometry,
 	EHoudiniInputType::Curve,
-	EHoudiniInputType::Asset,
-	EHoudiniInputType::Landscape,
-	EHoudiniInputType::World,
-	EHoudiniInputType::Skeletal,
-	EHoudiniInputType::GeometryCollection};
+	EHoudiniInputType::World
+};
 
 UENUM()
 enum class EHoudiniXformType : uint8
@@ -166,9 +164,17 @@ public:
 	UPROPERTY()
 	bool bMergeSplineMeshComponents;
 
-	// If enabled, target layers are exported per Edit Layer.
+	// If enabled, height data is exported per Edit Layer.
 	UPROPERTY()
-	bool bExportPerEditLayerData;
+	bool bExportHeightDataPerEditLayer;
+
+	// Export paint layers.
+	UPROPERTY()
+	bool bExportPaintLayersPerEditLayer;
+
+	// Export paint layers.
+	UPROPERTY()
+	bool bExportMergedPaintLayers;
 
 	// If enabled, level instances (and packed level actor) content is exported vs just exporting a single point
 	// with attributes identifying the level instance / packed level actor.

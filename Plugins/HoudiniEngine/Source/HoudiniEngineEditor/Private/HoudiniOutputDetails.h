@@ -31,8 +31,10 @@
 #include "Materials/MaterialInterface.h"
 #include "Components/Border.h"
 #include "Components/ComboBox.h"
+#include "PhysicsEngine/PhysicsAsset.h"
 
 
+struct FHoudiniBakeSettings;
 class IDetailCategoryBuilder;
 class FDetailWidgetRow;
 class UHoudiniOutput;
@@ -48,6 +50,8 @@ class AGeometryCollectionActor;
 class ALandscapeSplineActor;
 class SBorder;
 class SComboButton;
+class USkeletalMesh;
+class USkeleton;
 
 struct FHoudiniGeoPartObject;
 struct FHoudiniOutputObjectIdentifier;
@@ -65,6 +69,13 @@ public:
 
 	void CreateMeshOutputWidget(
 		IDetailCategoryBuilder& HouOutputCategory,
+		const TWeakObjectPtr<UHoudiniOutput>& InOutput);
+
+	void CreateSkeletalOutputWidget(
+		IDetailCategoryBuilder& HouOutputCategory,
+		const TWeakObjectPtr<UHoudiniOutput>& InOutput);
+
+	void CreateAnimSequenceOutputWidget(IDetailCategoryBuilder& HouOutputCategory,
 		const TWeakObjectPtr<UHoudiniOutput>& InOutput);
 
 	void CreateCurveOutputWidget(
@@ -94,7 +105,6 @@ public:
 		const TWeakObjectPtr<UHoudiniOutput>& InOutput,
 		const TWeakObjectPtr<UStaticMesh>& StaticMesh,
 		FHoudiniOutputObjectIdentifier& OutputIdentifier,
-		const FString BakeFolder,
 		FHoudiniGeoPartObject& HoudiniGeoPartObject,
 		const bool& bIsProxyMeshCurrent);
 
@@ -103,7 +113,15 @@ public:
 		const TWeakObjectPtr<UHoudiniOutput>& InOutput,
 		const TWeakObjectPtr<UHoudiniStaticMesh>& ProxyMesh,
 		FHoudiniOutputObjectIdentifier& OutputIdentifier,
-		const FString BakeFolder,
+		FHoudiniGeoPartObject& HoudiniGeoPartObject);
+
+	void CreateSkeletalMeshAndMaterialWidgets(
+		IDetailCategoryBuilder& HouOutputCategory,
+		const TWeakObjectPtr<UHoudiniOutput>& InOutput,
+		const TWeakObjectPtr<USkeletalMesh>& SkelMesh,
+		const TWeakObjectPtr<USkeleton>& Skeleton,
+		const TWeakObjectPtr<UPhysicsAsset>& PhysicsAsset,
+		FHoudiniOutputObjectIdentifier& OutputIdentifier,
 		FHoudiniGeoPartObject& HoudiniGeoPartObject);
 
 	void CreateCurveWidgets(
@@ -168,9 +186,10 @@ public:
 		const FHoudiniOutputObject& InOutputObject,
 		const FHoudiniGeoPartObject & HGPO,
 		const UObject* OutputOwner,
+		UHoudiniOutput* InOutput,
 		const FString & BakeFolder,
+		const FHoudiniBakeSettings& BakeSettings,
 		const FString & TempCookFolder,
-		const EHoudiniOutputType & Type,
 		const EHoudiniLandscapeOutputBakeType & LandscapeBakeType,
 		const TArray<UHoudiniOutput*>& InAllOutputs);
 

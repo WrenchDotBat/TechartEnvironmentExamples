@@ -47,100 +47,85 @@ _g_processor = None
 class ProcessHDAExample(ProcessHDA):
     @staticmethod
     def _print_api_input(in_input):
-        print("\t\tInput type: {0}".format(in_input.__class__))
-        print("\t\tbKeepWorldTransform: {0}".format(in_input.keep_world_transform))
-        print("\t\tbImportAsReference: {0}".format(in_input.import_as_reference))
+        print('\t\tInput type: {0}'.format(in_input.__class__))
+        print('\t\tbKeepWorldTransform: {0}'.format(in_input.keep_world_transform))
+        print('\t\tbImportAsReference: {0}'.format(in_input.import_as_reference))
         if isinstance(in_input, unreal.HoudiniPublicAPIGeoInput):
-            print("\t\tbPackBeforeMerge: {0}".format(in_input.pack_before_merge))
-            print("\t\tbExportLODs: {0}".format(in_input.export_lo_ds))
-            print("\t\tbExportSockets: {0}".format(in_input.export_sockets))
-            print("\t\tbExportColliders: {0}".format(in_input.export_colliders))
+            print('\t\tbPackBeforeMerge: {0}'.format(in_input.pack_before_merge))
+            print('\t\tbExportLODs: {0}'.format(in_input.export_lo_ds))
+            print('\t\tbExportSockets: {0}'.format(in_input.export_sockets))
+            print('\t\tbExportColliders: {0}'.format(in_input.export_colliders))
         elif isinstance(in_input, unreal.HoudiniPublicAPICurveInput):
-            print("\t\tbCookOnCurveChanged: {0}".format(in_input.cook_on_curve_changed))
-            print(
-                "\t\tbAddRotAndScaleAttributesOnCurves: {0}".format(
-                    in_input.add_rot_and_scale_attributes_on_curves
-                )
-            )
+            print('\t\tbCookOnCurveChanged: {0}'.format(in_input.cook_on_curve_changed))
+            print('\t\tbAddRotAndScaleAttributesOnCurves: {0}'.format(in_input.add_rot_and_scale_attributes_on_curves))
 
         input_objects = in_input.get_input_objects()
         if not input_objects:
-            print("\t\tEmpty input!")
+            print('\t\tEmpty input!')
         else:
-            print("\t\tNumber of objects in input: {0}".format(len(input_objects)))
+            print('\t\tNumber of objects in input: {0}'.format(len(input_objects)))
             for idx, input_object in enumerate(input_objects):
-                print("\t\t\tInput object #{0}: {1}".format(idx, input_object))
-                if (
-                    hasattr(in_input, "supports_transform_offset")
-                    and in_input.supports_transform_offset()
-                ):
-                    print(
-                        "\t\t\tObject Transform Offset: {0}".format(
-                            in_input.get_input_object_transform_offset(idx)
-                        )
-                    )
+                print('\t\t\tInput object #{0}: {1}'.format(idx, input_object))
+                if hasattr(in_input, 'supports_transform_offset') and in_input.supports_transform_offset():
+                    print('\t\t\tObject Transform Offset: {0}'.format(in_input.get_input_object_transform_offset(idx)))
                 if isinstance(input_object, unreal.HoudiniPublicAPICurveInputObject):
-                    print("\t\t\tbClosed: {0}".format(input_object.is_closed()))
-                    print(
-                        "\t\t\tCurveMethod: {0}".format(input_object.get_curve_method())
-                    )
-                    print("\t\t\tCurveType: {0}".format(input_object.get_curve_type()))
-                    print("\t\t\tReversed: {0}".format(input_object.is_reversed()))
-                    print(
-                        "\t\t\tCurvePoints: {0}".format(input_object.get_curve_points())
-                    )
+                    print('\t\t\tbClosed: {0}'.format(input_object.is_closed()))
+                    print('\t\t\tCurveMethod: {0}'.format(input_object.get_curve_method()))
+                    print('\t\t\tCurveType: {0}'.format(input_object.get_curve_type()))
+                    print('\t\t\tReversed: {0}'.format(input_object.is_reversed()))
+                    print('\t\t\tCurvePoints: {0}'.format(input_object.get_curve_points()))
 
     def on_failure(self):
-        print("on_failure")
+        print('on_failure')
         global _g_processor
         _g_processor = None
 
     def on_complete(self):
-        print("on_complete")
+        print('on_complete')
         global _g_processor
         _g_processor = None
 
     def on_pre_instantiation(self):
-        print("on_pre_instantiation")
+        print('on_pre_instantiation')
 
     def on_post_instantiation(self):
-        print("on_post_instantiation")
+        print('on_post_instantiation')
 
     def on_post_auto_cook(self, cook_success):
-        print("on_post_auto_cook, success = {0}".format(cook_success))
+        print('on_post_auto_cook, success = {0}'.format(cook_success))
 
     def on_pre_process(self):
-        print("on_pre_process")
+        print('on_pre_process')
 
     def on_post_processing(self):
-        print("on_post_processing")
+        print('on_post_processing')
 
         # Fetch inputs, iterate over it and log
         node_inputs = self.asset_wrapper.get_inputs_at_indices()
         parm_inputs = self.asset_wrapper.get_input_parameters()
 
         if not node_inputs:
-            print("No node inputs found!")
+            print('No node inputs found!')
         else:
-            print("Number of node inputs: {0}".format(len(node_inputs)))
+            print('Number of node inputs: {0}'.format(len(node_inputs)))
             for input_index, input_wrapper in node_inputs.items():
-                print("\tInput index: {0}".format(input_index))
+                print('\tInput index: {0}'.format(input_index))
                 self._print_api_input(input_wrapper)
 
         if not parm_inputs:
-            print("No parameter inputs found!")
+            print('No parameter inputs found!')
         else:
-            print("Number of parameter inputs: {0}".format(len(parm_inputs)))
+            print('Number of parameter inputs: {0}'.format(len(parm_inputs)))
             for parm_name, input_wrapper in parm_inputs.items():
-                print("\tInput parameter name: {0}".format(parm_name))
+                print('\tInput parameter name: {0}'.format(parm_name))
                 self._print_api_input(input_wrapper)
 
     def on_post_auto_bake(self, bake_success):
-        print("on_post_auto_bake, succes = {0}".format(bake_success))
+        print('on_post_auto_bake, succes = {0}'.format(bake_success))
 
 
 def get_test_hda_path():
-    return "/HoudiniEngine/Examples/hda/copy_to_curve_1_0.copy_to_curve_1_0"
+    return '/HoudiniEngine/Examples/hda/copy_to_curve_1_0.copy_to_curve_1_0'
 
 
 def get_test_hda():
@@ -148,7 +133,7 @@ def get_test_hda():
 
 
 def get_geo_asset_path():
-    return "/Engine/BasicShapes/Cube.Cube"
+    return '/Engine/BasicShapes/Cube.Cube'
 
 
 def get_geo_asset():
@@ -156,7 +141,7 @@ def get_geo_asset():
 
 
 def build_inputs():
-    print("configure_inputs")
+    print('configure_inputs')
 
     # get the API singleton
     houdini_api = unreal.HoudiniPublicAPIBlueprintLib.get_api()
@@ -167,7 +152,7 @@ def build_inputs():
     geo_input = houdini_api.create_empty_input(unreal.HoudiniPublicAPIGeoInput)
     # Set the input objects/assets for this input
     geo_object = get_geo_asset()
-    geo_input.set_input_objects((geo_object,))
+    geo_input.set_input_objects((geo_object, ))
     # store the input data to the HDA as node input 0
     node_inputs[0] = geo_input
 
@@ -188,7 +173,7 @@ def build_inputs():
         curve_points.append(unreal.Transform([x, y, z], [0, 0, 0], [1, 1, 1]))
     curve_object.set_curve_points(curve_points)
     # Set the curve wrapper as an input object
-    curve_input.set_input_objects((curve_object,))
+    curve_input.set_input_objects((curve_object, ))
     # Store the input data to the HDA as node input 1
     node_inputs[1] = curve_input
 
@@ -198,13 +183,14 @@ def build_inputs():
 def run():
     # Create the processor with preconfigured inputs
     global _g_processor
-    _g_processor = ProcessHDAExample(get_test_hda(), node_inputs=build_inputs())
+    _g_processor = ProcessHDAExample(
+        get_test_hda(), node_inputs=build_inputs())
     # Activate the processor, this will starts instantiation, and then cook
     if not _g_processor.activate():
-        unreal.log_warning("Activation failed.")
+        unreal.log_warning('Activation failed.')
     else:
-        unreal.log("Activated!")
+        unreal.log('Activated!')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     run()

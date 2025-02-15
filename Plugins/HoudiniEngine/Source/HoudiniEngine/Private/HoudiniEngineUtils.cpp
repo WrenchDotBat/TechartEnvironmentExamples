@@ -43,6 +43,7 @@
 #include "HoudiniAssetActor.h"
 #include "HoudiniAssetComponent.h"
 #include "HoudiniEngine.h"
+#include "HoudiniEngineEditorSettings.h"
 #include "HoudiniEnginePrivatePCH.h"
 #include "HoudiniEngineRuntime.h"
 #include "HoudiniEngineRuntimePrivatePCH.h"
@@ -91,6 +92,9 @@
 
 #include <vector>
 
+#include "HoudiniEngineAttributes.h"
+#include "Serialization/JsonSerializer.h"
+
 #if WITH_EDITOR
 	#include "EditorFramework/AssetImportData.h"
 	#include "EditorModeManager.h"
@@ -132,53 +136,7 @@ FHoudiniEngineUtils::PackageGUIDComponentNameLength = 12;
 const int32
 FHoudiniEngineUtils::PackageGUIDItemNameLength = 8;
 
-template <typename DataType>
-TArray<int> RunLengthEncode(const DataType* Data, int TupleSize, int Count, const float MaxCompressionRatio = 0.25f)
-{
-	// Run length encode the data.
-    // If this function returns an empty array it means the desired compression ratio could not be met.
 
-    auto CompareTuple = [TupleSize] (const DataType* StartA, const DataType* StartB)
-    {
-        for (int Index = 0; Index < TupleSize; Index++)
-        {
-            if (StartA[Index] != StartB[Index])
-                return false;
-        }
-        return true;
-    };
-
-    TArray<int> EncodedData;
-    if (Count == 0)
-        return EncodedData;
-
-	// Guess of size needed.
-    EncodedData.Reserve(static_cast<int>(MaxCompressionRatio * Count));
-
-	// The first run always begins on element zero.
-    int Start = 0;
-    EncodedData.Add(Start);
-
-	// Created a run length encoded array based off the input data. eg.
-    // [ 0, 0, 0, 1, 1, 2, 3 ] will return [ 0, 3, 5, 6]
-
-    for(int Index = 0; Index < Count * TupleSize; Index += TupleSize)
-    {
-        if (!CompareTuple(&Data[Start], &Data[Index]))
-        {
-		    // The value changed, so start a new run
-            Start = Index;
-            EncodedData.Add(Start / TupleSize);
-        }
-    }
-
-    // Check we've made a decent compression ratio. If not return an empty array.
-    float Ratio = float(EncodedData.Num() / float(Count));
-    if (Ratio > MaxCompressionRatio)
-        EncodedData.SetNum(0);
-
-    return EncodedData;
-}
 
 // Maximum size of the data that can be sent via thrift
 //#define THRIFT_MAX_CHUNKSIZE			100 * 1024 * 1024 // This is supposedly the current limit in thrift, but still seems to be too large
@@ -662,6 +620,20 @@ FHoudiniEngineUtils::RescanWorldPath(UWorld* InWorld)
 	AssetRegistry.ScanPathsSynchronous(Packages, true);
 }
 
+TArray<AActor*>
+FHoudiniEngineUtils::FindActorsWithNameNoNumber(UClass* InClass, UWorld* InWorld, const FString& InActorName)
+{
+	TArray<AActor*> Results;
+
+	for (TActorIterator<AActor> ActorIt(InWorld, InClass); ActorIt; ++ActorIt)
+	{
+		AActor * Actor = *ActorIt;
+		if (Actor->GetFName().GetPlainNameString() == InActorName)
+			Results.Add(Actor);
+	}
+	return Results;
+}
+
 AActor*
 FHoudiniEngineUtils::FindOrRenameInvalidActorGeneric(UClass* InClass, UWorld* InWorld, const FString& InName, AActor*& OutFoundActor)
 {
@@ -715,7 +687,11 @@ void FHoudiniEngineUtils::LogPackageInfo(const UPackage* InPackage)
 	}
 
 	HOUDINI_LOG_MESSAGE(TEXT(" = Filename: %s"), *(InPackage->GetLoadedPath().GetPackageName()));
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
+	HOUDINI_LOG_MESSAGE(TEXT(" = Package Id: %s"), *(LexToString(InPackage->GetPackageId())));
+#else
 	HOUDINI_LOG_MESSAGE(TEXT(" = Package Id: %d"), InPackage->GetPackageId().ValueForDebugging());
+#endif
 	HOUDINI_LOG_MESSAGE(TEXT(" = File size: %d"), InPackage->GetFileSize());
 	HOUDINI_LOG_MESSAGE(TEXT(" = Contains map: %d"), InPackage->ContainsMap());
 	HOUDINI_LOG_MESSAGE(TEXT(" = Is Fully Loaded: %d"), InPackage->IsFullyLoaded());
@@ -947,10 +923,7 @@ bool FHoudiniEngineUtils::RenameObject(UObject* Object, const TCHAR* NewName /*=
 		if (Actor->IsPackageExternal())
 		{
 			// There should be no need to choose a specific name for an actor in Houdini Engine, instead setting its label should be enough.
-			if (FHoudiniEngineRuntimeUtils::SetActorLabel(Actor, NewName))
-			{
-				HOUDINI_LOG_WARNING(TEXT("Called SetActorLabel(%s) on external actor %s instead of Rename : Explicit naming of an actor that is saved in its own external package is prone to cause name clashes when submitting the file.)"), NewName, *Actor->GetActorNameOrLabel());
-			}
+			FHoudiniEngineRuntimeUtils::SetActorLabel(Actor, NewName);
 			// Force to return false (make sure nothing in Houdini Engine plugin relies on actor being renamed to provided name)
 			return false;
 		}
@@ -1062,6 +1035,7 @@ FHoudiniEngineUtils::FillInPackageParamsForBakingOutputWithResolver(
 	const UHoudiniAssetComponent* HoudiniAssetComponent,
 	const FHoudiniOutputObjectIdentifier& InIdentifier,
 	const FHoudiniOutputObject& InOutputObject,
+	const bool bInHasPreviousBakeData,
 	const FString &InDefaultObjectName,
 	FHoudiniPackageParams& OutPackageParams,
 	FHoudiniAttributeResolver& OutResolver,
@@ -1094,11 +1068,11 @@ FHoudiniEngineUtils::FillInPackageParamsForBakingOutputWithResolver(
 	{
 		HoudiniAssetName = InHoudiniAssetName;
 	}
-	else if (bIsHACValid && IsValid(HoudiniAssetComponent->GetHoudiniAsset()))
+	else if (bIsHACValid)
 	{
-		HoudiniAssetName = HoudiniAssetComponent->GetHoudiniAsset()->GetName();
+		HoudiniAssetName = HoudiniAssetComponent->GetHoudiniAssetName();
 	}
-	
+
 	// If InHoudiniAssetActorName was specified, use that, otherwise use the name of the owner of HoudiniAssetComponent
 	FString HoudiniAssetActorName(TEXT(""));
 	if (!InHoudiniAssetActorName.IsEmpty())
@@ -1108,7 +1082,7 @@ FHoudiniEngineUtils::FillInPackageParamsForBakingOutputWithResolver(
 	else if (bIsHACValid && IsValid(HoudiniAssetComponent->GetOwner()))
 	{
 		HoudiniAssetActorName = HoudiniAssetComponent->GetOwner()->GetActorNameOrLabel();
-	}
+	}	
 
 	// Get the HAC's GUID, if the HAC is valid
 	TOptional<FGuid> ComponentGuid;
@@ -1144,6 +1118,7 @@ FHoudiniEngineUtils::FillInPackageParamsForBakingOutputWithResolver(
 	OutResolver.LogCachedAttributesAndTokens();
 #endif
 
+	bool bUsedDefaultBakeName = !bHasBakeNameUIOverride;
 	if (!bInSkipObjectNameResolutionAndUseDefault)
 	{
 		// Resolve the object name
@@ -1152,13 +1127,17 @@ FHoudiniEngineUtils::FillInPackageParamsForBakingOutputWithResolver(
 		if (bHasBakeNameUIOverride)
 		{
 			ObjectName = InOutputObject.BakeName;
+			bUsedDefaultBakeName = false;
 		}
 		else
 		{
 			constexpr bool bForBake = true;
-			ObjectName = OutResolver.ResolveOutputName(bForBake);
+			ObjectName = OutResolver.ResolveOutputName(bForBake, &bUsedDefaultBakeName);
 			if (ObjectName.IsEmpty())
+			{
 				ObjectName = DefaultObjectName;
+				bUsedDefaultBakeName = true;
+			}
 		}
 		// Update the object name in the package params and also update its token
 		OutPackageParams.ObjectName = ObjectName;
@@ -1183,6 +1162,16 @@ FHoudiniEngineUtils::FillInPackageParamsForBakingOutputWithResolver(
 		// Log the final tokens
 		OutResolver.LogCachedAttributesAndTokens();
 #endif
+	}
+
+	// If the default bake name is being used, and we haven't baked this output identifier on this output before,
+	// then do not allow replacement bakes.
+	if (bUsedDefaultBakeName && !bInHasPreviousBakeData && OutPackageParams.ReplaceMode == EPackageReplaceMode::ReplaceExistingAssets)
+	{
+		HOUDINI_BAKING_WARNING(TEXT(
+			"[FHoudiniEngineUtils::FillInPackageParamsForBakingOutputWithResolver] Disabling replace bake mode: "
+			"default bake name is being used with no previous bake output for the object."));
+		OutPackageParams.ReplaceMode = EPackageReplaceMode::CreateNewAssets;
 	}
 }
 
@@ -1255,43 +1244,33 @@ FHoudiniEngineUtils::GatherLandscapeInputs(
 	UHoudiniAssetComponent* HAC,
 	TArray<ALandscapeProxy*>& AllInputLandscapes)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::GatherLandscapeInputs);
 	if (!IsValid(HAC))
 		return;
 
-	int32 NumInputs = HAC->GetNumInputs();
-	
+	int32 NumInputs = HAC->GetNumInputs();	
 	for (int32 InputIndex = 0; InputIndex < NumInputs; InputIndex++ )
 	{
 		UHoudiniInput* CurrentInput = HAC->GetInputAt(InputIndex);
 		if (!CurrentInput)
 			continue;
 		
-		if (CurrentInput->GetInputType() == EHoudiniInputType::World)
+		if (CurrentInput->GetInputType() != EHoudiniInputType::World)
+			continue;
+
+		// Check if we have any landscapes as world inputs.
+		CurrentInput->ForAllHoudiniInputObjects([&AllInputLandscapes](UHoudiniInputObject* InputObject)
 		{
-			// Check if we have any landscapes as world inputs.
-			CurrentInput->ForAllHoudiniInputObjects([&AllInputLandscapes](UHoudiniInputObject* InputObject)
+			UHoudiniInputLandscape* InputLandscape = Cast<UHoudiniInputLandscape>(InputObject);
+			if (InputLandscape)
 			{
-				UHoudiniInputLandscape* InputLandscape = Cast<UHoudiniInputLandscape>(InputObject);
-				if (InputLandscape)
+				ALandscapeProxy* LandscapeProxy = InputLandscape->GetLandscapeProxy();
+				if (IsValid(LandscapeProxy))
 				{
-					ALandscapeProxy* LandscapeProxy = InputLandscape->GetLandscapeProxy();
-					if (IsValid(LandscapeProxy))
-					{
-						AllInputLandscapes.Add(LandscapeProxy);
-					}
+					AllInputLandscapes.Add(LandscapeProxy);
 				}
-			}, true);
-		}
-		
-		if (CurrentInput->GetInputType() != EHoudiniInputType::Landscape)
-			continue;
-
-		// Get the landscape input's landscape
-		ALandscapeProxy* InputLandscape = Cast<ALandscapeProxy>(CurrentInput->GetInputObjectAt(0));
-		if (!InputLandscape)
-			continue;
-
-		AllInputLandscapes.Add(InputLandscape);
+			}
+		}, true);
 	}
 }
 
@@ -1359,19 +1338,36 @@ FHoudiniEngineUtils::LoadLibHAPI(FString & StoredLibHAPILocation)
 	FString LibHAPIName = FHoudiniEngineRuntimeUtils::GetLibHAPIName();
 
 	// If we have a custom location specified through settings, attempt to use that.
-	bool bCustomPathFound = false;
 	const UHoudiniRuntimeSettings * HoudiniRuntimeSettings = GetDefault< UHoudiniRuntimeSettings >();
-	if (HoudiniRuntimeSettings && HoudiniRuntimeSettings->bUseCustomHoudiniLocation)
+	const UHoudiniEngineEditorSettings * HoudiniEngineEditorSettings = GetDefault< UHoudiniEngineEditorSettings >();
+	bool bCustomPathFound = false;
+	if (IsValid(HoudiniEngineEditorSettings) || IsValid(HoudiniRuntimeSettings))
 	{
-		// Create full path to libHAPI binary.
-		FString CustomHoudiniLocationPath = HoudiniRuntimeSettings->CustomHoudiniLocation.Path;
-		if (!CustomHoudiniLocationPath.IsEmpty())
+		bool bUseCustomPath = false;
+		FString CustomHoudiniLocationPath;
+
+		// The user can set a editor per-project user setting in UHoudiniEngineEditorSettings to determine if
+		// the custom location should be disabled, read from the editor per-project user settings or read from the
+		// per-project settings.
+		if (HoudiniEngineEditorSettings && HoudiniEngineEditorSettings->UseCustomHoudiniLocation == EHoudiniEngineEditorSettingUseCustomLocation::Enabled)
+		{
+			bUseCustomPath = true;
+			CustomHoudiniLocationPath = HoudiniEngineEditorSettings->CustomHoudiniLocation.Path;
+		}
+		else if ((!HoudiniEngineEditorSettings || HoudiniEngineEditorSettings->UseCustomHoudiniLocation == EHoudiniEngineEditorSettingUseCustomLocation::Project) &&
+			HoudiniRuntimeSettings && HoudiniRuntimeSettings->bUseCustomHoudiniLocation)
+		{
+			bUseCustomPath = true;
+			CustomHoudiniLocationPath = HoudiniRuntimeSettings->CustomHoudiniLocation.Path;
+		}
+
+		if (bUseCustomPath && !CustomHoudiniLocationPath.IsEmpty())
 		{
 			// Convert path to absolute if it is relative.
 			if (FPaths::IsRelative(CustomHoudiniLocationPath))
 				CustomHoudiniLocationPath = FPaths::ConvertRelativePathToFull(CustomHoudiniLocationPath);
 
-			FString LibHAPICustomPath = FString::Printf(TEXT("%s/%s"), *CustomHoudiniLocationPath, *LibHAPIName);
+			const FString LibHAPICustomPath = FString::Printf(TEXT("%s/%s"), *CustomHoudiniLocationPath, *LibHAPIName);
 
 			if (FPaths::FileExists(LibHAPICustomPath))
 			{
@@ -1548,6 +1544,7 @@ FHoudiniEngineUtils::LoadLibHAPI(FString & StoredLibHAPILocation)
 bool
 FHoudiniEngineUtils::IsInitialized()
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::IsInitialized);
 	if (!FHoudiniApi::IsHAPIInitialized())
 		return false;
 
@@ -1673,6 +1670,8 @@ FHoudiniEngineUtils::LocateLibHAPIInRegistry(
 bool
 FHoudiniEngineUtils::LoadHoudiniAsset(const UHoudiniAsset * HoudiniAsset, HAPI_AssetLibraryId& OutAssetLibraryId)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::LoadHoudiniAsset);
+
 	OutAssetLibraryId = -1;
 
 	if (!IsValid(HoudiniAsset))
@@ -1724,6 +1723,8 @@ FHoudiniEngineUtils::LoadHoudiniAsset(const UHoudiniAsset * HoudiniAsset, HAPI_A
 	// Lambda to detect license issues
 	auto CheckLicenseValid = [&AssetFileName](const HAPI_Result& Result)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::LoadHoudiniAsset - CheckLicenseValid);
+
 		// HoudiniEngine acquires a license when creating/loading a node, not when creating a session
 		if (Result >= HAPI_RESULT_NO_LICENSE_FOUND && Result < HAPI_RESULT_ASSET_INVALID)
 		{
@@ -1748,6 +1749,8 @@ FHoudiniEngineUtils::LoadHoudiniAsset(const UHoudiniAsset * HoudiniAsset, HAPI_A
 	// Lambda to load an HDA from file
 	auto LoadAssetFromFile = [&Result, &OutAssetLibraryId](const FString& InAssetFileName)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::LoadHoudiniAsset - LoadAssetFromFile);
+
 		// Load the asset from file.
 		std::string AssetFileNamePlain;
 		FHoudiniEngineUtils::ConvertUnrealString(InAssetFileName, AssetFileNamePlain);
@@ -1759,6 +1762,8 @@ FHoudiniEngineUtils::LoadHoudiniAsset(const UHoudiniAsset * HoudiniAsset, HAPI_A
 	// Lambda to load an HDA from memory
 	auto LoadAssetFromMemory = [&Result, &OutAssetLibraryId](const UHoudiniAsset* InHoudiniAsset)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::LoadHoudiniAsset - LoadAssetFromMemory);
+
 		// Load the asset from the cached memory buffer
 		Result = FHoudiniApi::LoadAssetLibraryFromMemory(
 			FHoudiniEngine::Get().GetSession(),
@@ -1851,6 +1856,8 @@ FHoudiniEngineUtils::GetSubAssetNames(
 	const HAPI_AssetLibraryId& AssetLibraryId,
 	TArray< HAPI_StringHandle >& OutAssetNames)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::GetSubAssetNames);
+
 	if (AssetLibraryId < 0)
 		return false;
 
@@ -1883,7 +1890,22 @@ FHoudiniEngineUtils::GetSubAssetNames(
 		return false;
 	}
 
-	return true;
+	// Recipes show as subassets - and can't be instantiated by HAPI (even potentially crash?)
+	// So, get all the subasset names - and remove the recipes (::Data/) from the list
+	FString RecipeString = TEXT("::Data/");
+	for (int32 n = OutAssetNames.Num() - 1; n >= 0; n--)
+	{
+		// Get the name string
+		FHoudiniEngineString HapiStr(OutAssetNames[n]);
+		FString AssetName;
+		HapiStr.ToFString(AssetName, FHoudiniEngine::Get().GetSession());
+		
+		// If the HDA names matches the "recipes" substring - remove this subasset from the list to prevent its instantiation
+		if (AssetName.Contains(RecipeString))
+			OutAssetNames.RemoveAt(n);
+	}
+
+	return OutAssetNames.Num() > 0;
 }
 
 
@@ -1917,9 +1939,9 @@ FHoudiniEngineUtils::OpenSubassetSelectionWindow(TArray<HAPI_StringHandle>& Asse
 	TSharedRef<SWindow> Window = SNew(SWindow)
 		.Title(LOCTEXT("WindowTitle", "Select an asset to instantiate"))
 		.ClientSize(FVector2D(640, 480))
-		.SupportsMinimize(false)
-		.SupportsMaximize(false)
-		.HasCloseButton(false);
+		.SupportsMinimize(true)
+		.SupportsMaximize(true)
+		.HasCloseButton(true);
 
 	Window->SetContent(SAssignNew(AssetSelectionWidget, SAssetSelectionWidget)
 		.WidgetWindow(Window)
@@ -1956,21 +1978,37 @@ FHoudiniEngineUtils::IsValidNodeId(HAPI_NodeId NodeId)
 */
 
 bool
-FHoudiniEngineUtils::GetHoudiniAssetName(const HAPI_NodeId& AssetNodeId, FString & NameString)
+FHoudiniEngineUtils::GetHoudiniAssetName(const HAPI_NodeId& AssetNodeId, FString& NameString)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::GetHoudiniAssetName);
+
+	if (AssetNodeId < 0)
+		return false;
+
 	HAPI_AssetInfo AssetInfo;
 	if (FHoudiniApi::GetAssetInfo(FHoudiniEngine::Get().GetSession(), AssetNodeId, &AssetInfo) == HAPI_RESULT_SUCCESS)
 	{
 		FHoudiniEngineString HoudiniEngineString(AssetInfo.nameSH);
 		return HoudiniEngineString.ToFString(NameString);
 	}
+	else
+	{
+		// If the node is not an asset, return the node name
+		HAPI_NodeInfo NodeInfo;
+		if (FHoudiniApi::GetNodeInfo(FHoudiniEngine::Get().GetSession(), AssetNodeId, &NodeInfo) == HAPI_RESULT_SUCCESS)
+		{
+			FHoudiniEngineString HoudiniEngineString(NodeInfo.nameSH);
+			return HoudiniEngineString.ToFString(NameString);
+		}
+	}
 
 	return false;
 }
 
 bool
-FHoudiniEngineUtils::GetAssetPreset(const HAPI_NodeId& AssetNodeId, TArray< char > & PresetBuffer)
+FHoudiniEngineUtils::GetAssetPreset(const HAPI_NodeId& AssetNodeId, TArray<int8>& PresetBuffer)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::GetAssetPreset);
 	PresetBuffer.Empty();
 
 	HAPI_NodeId NodeId;
@@ -1983,6 +2021,9 @@ FHoudiniEngineUtils::GetAssetPreset(const HAPI_NodeId& AssetNodeId, TArray< char
 	else
 		NodeId = AssetNodeId;
 
+	if (NodeId < 0)
+		return false;
+
 	int32 BufferLength = 0;
 	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetPresetBufLength(
 		FHoudiniEngine::Get().GetSession(), NodeId,
@@ -1991,7 +2032,7 @@ FHoudiniEngineUtils::GetAssetPreset(const HAPI_NodeId& AssetNodeId, TArray< char
 	PresetBuffer.SetNumZeroed(BufferLength);
 	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetPreset(
 		FHoudiniEngine::Get().GetSession(), NodeId,
-		&PresetBuffer[0], PresetBuffer.Num()), false);
+		(char*)(PresetBuffer.GetData()), PresetBuffer.Num()), false);
 
 	return true;
 }
@@ -2023,6 +2064,8 @@ FHoudiniEngineUtils::HapiGetAbsNodePath(const HAPI_NodeId& InNodeId, FString& Ou
 bool
 FHoudiniEngineUtils::HapiGetNodePath(const HAPI_NodeId& InNodeId, const HAPI_NodeId& InRelativeToNodeId, FString& OutPath)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::HapiGetNodePath);
+
 	// Retrieve Path to the given Node, relative to the other given Node
 	if ((InNodeId < 0) || (InRelativeToNodeId < 0))
 		return false;
@@ -2053,21 +2096,31 @@ FHoudiniEngineUtils::HapiGetNodePath(const FHoudiniGeoPartObject& InHGPO, FStrin
 	FString NodePathTemp;
 	if (InHGPO.AssetId == InHGPO.GeoId)
 	{
+		HAPI_NodeId AssetNodeId = -1;
+
 		// This is a SOP asset, just return the asset name in this case
 		HAPI_AssetInfo AssetInfo;
 		FHoudiniApi::AssetInfo_Init(&AssetInfo);
 		if (HAPI_RESULT_SUCCESS == FHoudiniApi::GetAssetInfo(
 			FHoudiniEngine::Get().GetSession(), InHGPO.AssetId, &AssetInfo))
 		{
-			HAPI_NodeInfo AssetNodeInfo;
-			FHoudiniApi::NodeInfo_Init(&AssetNodeInfo);
-			if (HAPI_RESULT_SUCCESS == FHoudiniApi::GetNodeInfo(
-				FHoudiniEngine::Get().GetSession(), AssetInfo.nodeId, &AssetNodeInfo))
-			{				
-				if (FHoudiniEngineString::ToFString(AssetNodeInfo.nameSH, NodePathTemp))
-				{
-					OutPath = FString::Printf(TEXT("%s_%d"), *NodePathTemp, InHGPO.PartId);
-				}
+			// Get the asset info node id
+			AssetNodeId = AssetInfo.nodeId;
+		}
+		else
+		{
+			// Not an asset, just use the node id directly
+			AssetNodeId = InHGPO.AssetId;
+		}
+
+		HAPI_NodeInfo AssetNodeInfo;
+		FHoudiniApi::NodeInfo_Init(&AssetNodeInfo);
+		if (HAPI_RESULT_SUCCESS == FHoudiniApi::GetNodeInfo(
+			FHoudiniEngine::Get().GetSession(), AssetNodeId, &AssetNodeInfo))
+		{
+			if (FHoudiniEngineString::ToFString(AssetNodeInfo.nameSH, NodePathTemp))
+			{
+				OutPath = FString::Printf(TEXT("%s_%d"), *NodePathTemp, InHGPO.PartId);
 			}
 		}
 	}
@@ -2095,6 +2148,8 @@ FHoudiniEngineUtils::HapiGetNodePath(const FHoudiniGeoPartObject& InHGPO, FStrin
 bool
 FHoudiniEngineUtils::HapiGetObjectInfos(const HAPI_NodeId& InNodeId, TArray<HAPI_ObjectInfo>& OutObjectInfos, TArray<HAPI_Transform>& OutObjectTransforms)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::HapiGetObjectInfos);
+
 	HAPI_NodeInfo NodeInfo;
 	FHoudiniApi::NodeInfo_Init(&NodeInfo);
 	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetNodeInfo(
@@ -2150,13 +2205,17 @@ FHoudiniEngineUtils::HapiGetObjectInfos(const HAPI_NodeId& InNodeId, TArray<HAPI
 		}
 		else
 		{
-			// This OBJ has children
-			// See if we should add ourself by looking for immediate display SOP 
 			int32 ImmediateSOP = 0;
-			HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::ComposeChildNodeList(
-				FHoudiniEngine::Get().GetSession(), NodeInfo.id,
-				HAPI_NODETYPE_SOP, HAPI_NODEFLAGS_DISPLAY,
-				false, &ImmediateSOP), false);
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::HapiGetObjectInfos-ComposeChildNodeList);
+
+				// This OBJ has children
+				// See if we should add ourself by looking for immediate display SOP 
+				HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::ComposeChildNodeList(
+					FHoudiniEngine::Get().GetSession(), NodeInfo.id,
+					HAPI_NODETYPE_SOP, HAPI_NODEFLAGS_DISPLAY,
+					false, &ImmediateSOP), false);
+			}
 
 			bool bAddSelf = ImmediateSOP > 0;
 			HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::ComposeObjectList(
@@ -2206,6 +2265,8 @@ FHoudiniEngineUtils::HapiGetObjectInfos(const HAPI_NodeId& InNodeId, TArray<HAPI
 bool 
 FHoudiniEngineUtils::IsObjNodeFullyVisible(const TSet<HAPI_NodeId>& AllObjectIds, const HAPI_NodeId& InRootNodeId, const HAPI_NodeId& InChildNodeId)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::IsObjNodeFullyVisible);
+
 	// Walk up the hierarchy from child to root.
 	// If any node in that hierarchy is not in the "AllObjectIds" set, the OBJ node is considered to
 	// be hidden.
@@ -2284,13 +2345,14 @@ FHoudiniEngineUtils::IsSopNode(const HAPI_NodeId& NodeId)
 
 bool FHoudiniEngineUtils::ContainsSopNodes(const HAPI_NodeId& NodeId)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::ContainsSopNodes);
 	int ChildCount = 0;
 	HOUDINI_CHECK_ERROR_RETURN(
 		FHoudiniApi::ComposeChildNodeList(
 			FHoudiniEngine::Get().GetSession(),
 			NodeId,
 			HAPI_NODETYPE_SOP,
-			HAPI_NODEFLAGS_ANY,
+			HAPI_NODEFLAGS_NON_BYPASS,
 			false,
 			&ChildCount
 		),
@@ -2318,34 +2380,52 @@ bool FHoudiniEngineUtils::GetOutputIndex(const HAPI_NodeId& InNodeId, int32& Out
 
 bool
 FHoudiniEngineUtils::GatherAllAssetOutputs(
-	const HAPI_NodeId& AssetId,
-	const bool bUseOutputNodes,
-	const bool bOutputTemplatedGeos,
+	HAPI_NodeId AssetId,
+	bool bUseOutputNodes,
+	bool bOutputTemplatedGeos,
+	bool bGatherEditableCurves,
 	TArray<HAPI_NodeId>& OutOutputNodes)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::GatherAllAssetOutputs);
+
 	OutOutputNodes.Empty();
 	
 	// Ensure the asset has a valid node ID
 	if (AssetId < 0)
-	{
 		return false;
-	}
 
 	// Get the AssetInfo
 	HAPI_AssetInfo AssetInfo;
-	FHoudiniApi::AssetInfo_Init(&AssetInfo);
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetAssetInfo(
-		FHoudiniEngine::Get().GetSession(), AssetId, &AssetInfo), false);
+	bool bAssetInfoResult = false;
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::GatherAllAssetOutputs-GetAssetInfo);
+		FHoudiniApi::AssetInfo_Init(&AssetInfo);
+		bAssetInfoResult = HAPI_RESULT_SUCCESS == FHoudiniApi::GetAssetInfo(
+			FHoudiniEngine::Get().GetSession(), AssetId, &AssetInfo);
+	}
 
 	// Get the Asset NodeInfo
 	HAPI_NodeInfo AssetNodeInfo;
-	FHoudiniApi::NodeInfo_Init(&AssetNodeInfo);
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetNodeInfo(
-		FHoudiniEngine::Get().GetSession(), AssetId, &AssetNodeInfo), false);
+	HAPI_Result NodeResult = HAPI_RESULT_FAILURE;
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::GatherAllAssetOutputs-GetNodeInfo);
+		FHoudiniApi::NodeInfo_Init(&AssetNodeInfo);
+		NodeResult = FHoudiniApi::GetNodeInfo(
+			FHoudiniEngine::Get().GetSession(), AssetId, &AssetNodeInfo);
+	}
+
+	if (HAPI_RESULT_SUCCESS != NodeResult)
+	{
+		// Don't log invalid argument errors here
+		if (NodeResult != HAPI_RESULT_INVALID_ARGUMENT)
+			HOUDINI_CHECK_ERROR_RETURN(NodeResult, false);
+		else
+			return false;
+	}
 
 	FString CurrentAssetName;
 	{
-		FHoudiniEngineString hapiSTR(AssetInfo.nameSH);
+		FHoudiniEngineString hapiSTR(bAssetInfoResult ? AssetInfo.nameSH : AssetNodeInfo.nameSH);
 		hapiSTR.ToFString(CurrentAssetName);
 	}
 
@@ -2364,9 +2444,10 @@ FHoudiniEngineUtils::GatherAllAssetOutputs(
 	int32 EditableNodeCount = 0;
 	if (bAssetHasChildren)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::GatherAllAssetOutputs-ComposeChildNodeList);
 		HOUDINI_CHECK_ERROR(FHoudiniApi::ComposeChildNodeList(
 			FHoudiniEngine::Get().GetSession(),
-			AssetId, HAPI_NODETYPE_SOP, HAPI_NODEFLAGS_EDITABLE,
+			AssetId, HAPI_NODETYPE_SOP, HAPI_NODEFLAGS_EDITABLE | HAPI_NODEFLAGS_NON_BYPASS,
 			true, &EditableNodeCount));
 	}
 	
@@ -2374,6 +2455,7 @@ FHoudiniEngineUtils::GatherAllAssetOutputs(
 	// of whether the subnet is considered visible or not.
 	if (EditableNodeCount > 0)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::GatherAllAssetOutputs-GetComposedChildNodeList);
 		TArray<HAPI_NodeId> EditableNodeIds;
 		EditableNodeIds.SetNumUninitialized(EditableNodeCount);
 		HOUDINI_CHECK_ERROR(FHoudiniApi::GetComposedChildNodeList(
@@ -2382,6 +2464,7 @@ FHoudiniEngineUtils::GatherAllAssetOutputs(
 
 		for (int32 nEditable = 0; nEditable < EditableNodeCount; nEditable++)
 		{
+			TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::GatherAllAssetOutputs-GetEditableGeoInfo);
 			HAPI_GeoInfo CurrentEditableGeoInfo;
 			FHoudiniApi::GeoInfo_Init(&CurrentEditableGeoInfo);
 			HOUDINI_CHECK_ERROR(FHoudiniApi::GetGeoInfo(
@@ -2397,7 +2480,7 @@ FHoudiniEngineUtils::GatherAllAssetOutputs(
 				continue;
 
 			// We only handle editable curves for now
-			if (CurrentEditableGeoInfo.type != HAPI_GEOTYPE_CURVE)
+			if (CurrentEditableGeoInfo.type != HAPI_GEOTYPE_CURVE || !bGatherEditableCurves)
 				continue;
 
 			// Add this geo to the geo info array
@@ -2405,11 +2488,11 @@ FHoudiniEngineUtils::GatherAllAssetOutputs(
 		}
 	}
 
-	const bool bIsSopAsset = AssetInfo.nodeId != AssetInfo.objectNodeId;
+	const bool bIsSopAsset = bAssetInfoResult ? (AssetInfo.nodeId != AssetInfo.objectNodeId) : AssetNodeInfo.type == HAPI_NODETYPE_SOP;
 	bool bUseOutputFromSubnets = true;
 	if (bAssetHasChildren)
 	{
-		if (FHoudiniEngineUtils::ContainsSopNodes(AssetInfo.nodeId))
+		if (FHoudiniEngineUtils::ContainsSopNodes(bAssetInfoResult ? AssetInfo.nodeId : AssetNodeInfo.id))
 		{
 			// This HDA contains immediate SOP nodes. Don't look for subnets to output.
 			bUseOutputFromSubnets = false;
@@ -2436,6 +2519,7 @@ FHoudiniEngineUtils::GatherAllAssetOutputs(
 	TSet<HAPI_NodeId> AllObjectIds;
 	if (bUseOutputFromSubnets)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::GatherAllAssetOutputs-GetComposedChildNodeList2);
 		int NumObjSubnets;
 		TArray<HAPI_NodeId> ObjectIds;
 		HOUDINI_CHECK_ERROR_RETURN(
@@ -2443,12 +2527,13 @@ FHoudiniEngineUtils::GatherAllAssetOutputs(
 				FHoudiniEngine::Get().GetSession(),
 				AssetId,
 				HAPI_NODETYPE_OBJ,
-				HAPI_NODEFLAGS_OBJ_SUBNET,
+				HAPI_NODEFLAGS_OBJ_SUBNET | HAPI_NODEFLAGS_NON_BYPASS,
 				true,
 				&NumObjSubnets
 				),
 			false);
 
+		TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::GatherAllAssetOutputs-GetComposedChildNodeList2);
 		ObjectIds.SetNumUninitialized(NumObjSubnets);
 		HOUDINI_CHECK_ERROR_RETURN(
 			FHoudiniApi::GetComposedChildNodeList(
@@ -2541,6 +2626,8 @@ bool FHoudiniEngineUtils::GatherImmediateOutputGeoInfos(const HAPI_NodeId& InNod
                                                         TSet<HAPI_NodeId>& OutForceNodesCook
 )
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::GatherImmediateOutputGeoInfos);
+
 	TSet<HAPI_NodeId> GatheredNodeIds;
 
 	// NOTE: This function assumes that the incoming node is a Geometry container that contains immediate
@@ -2841,8 +2928,8 @@ FHoudiniEngineUtils::TranslateUnrealTransform(const FTransform& UnrealTransform,
 
 void
 FHoudiniEngineUtils::TranslateUnrealTransform(
-	const FTransform & UnrealTransform,
-	HAPI_TransformEuler & HapiTransformEuler)
+	const FTransform& UnrealTransform,
+	HAPI_TransformEuler& HapiTransformEuler)
 {
 	FHoudiniApi::TransformEuler_Init(&HapiTransformEuler);
 
@@ -2975,6 +3062,8 @@ FHoudiniEngineUtils::ConvertHoudiniRotEulerToUnrealVector(const TArray<float>& I
 bool
 FHoudiniEngineUtils::UploadHACTransform(UHoudiniAssetComponent* HAC)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::UploadHACTransform);
+
 	if (!HAC || !HAC->bUploadTransformsToHoudiniEngine)
 		return false;
 
@@ -2997,6 +3086,7 @@ FHoudiniEngineUtils::UploadHACTransform(UHoudiniAssetComponent* HAC)
 bool
 FHoudiniEngineUtils::HapiSetAssetTransform(const HAPI_NodeId& AssetId, const FTransform & Transform)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::HapiSetAssetTransform);
 	if (AssetId < 0)
 		return false;
 
@@ -3049,6 +3139,8 @@ FHoudiniEngineUtils::HapiGetParentNodeId(const HAPI_NodeId& NodeId)
 void
 FHoudiniEngineUtils::AssignUniqueActorLabelIfNeeded(UHoudiniAssetComponent* HAC)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::AssignUniqueActorLabelIfNeeded);
+
 	if (!IsValid(HAC))
 		return;
 
@@ -3091,53 +3183,65 @@ FHoudiniEngineUtils::GetLicenseType(FString & LicenseType)
 
 	switch (LicenseTypeValue)
 	{
-	case HAPI_LICENSE_NONE:
-	{
-		LicenseType = TEXT("No License Acquired");
-		break;
-	}
+		case HAPI_LICENSE_NONE:
+		{
+			LicenseType = TEXT("No License Acquired");
+			break;
+		}
 
-	case HAPI_LICENSE_HOUDINI_ENGINE:
-	{
-		LicenseType = TEXT("Houdini Engine");
-		break;
-	}
+		case HAPI_LICENSE_HOUDINI_ENGINE:
+		{
+			LicenseType = TEXT("Houdini Engine");
+			break;
+		}
 
-	case HAPI_LICENSE_HOUDINI:
-	{
-		LicenseType = TEXT("Houdini");
-		break;
-	}
+		case HAPI_LICENSE_HOUDINI:
+		{
+			LicenseType = TEXT("Houdini");
+			break;
+		}
 
-	case HAPI_LICENSE_HOUDINI_FX:
-	{
-		LicenseType = TEXT("Houdini FX");
-		break;
-	}
+		case HAPI_LICENSE_HOUDINI_FX:
+		{
+			LicenseType = TEXT("Houdini FX");
+			break;
+		}
 
-	case HAPI_LICENSE_HOUDINI_ENGINE_INDIE:
-	{
-		LicenseType = TEXT("Houdini Engine Indie");
-		break;
-	}
+		case HAPI_LICENSE_HOUDINI_ENGINE_INDIE:
+		{
+			LicenseType = TEXT("Houdini Engine Indie");
+			break;
+		}
 
-	case HAPI_LICENSE_HOUDINI_INDIE:
-	{
-		LicenseType = TEXT("Houdini Indie");
-		break;
-	}
+		case HAPI_LICENSE_HOUDINI_INDIE:
+		{
+			LicenseType = TEXT("Houdini Indie");
+			break;
+		}
 
-	case HAPI_LICENSE_HOUDINI_ENGINE_UNITY_UNREAL:
-	{
-		LicenseType = TEXT("Houdini Engine for Unity/Unreal");
-		break;
-	}
+		case HAPI_LICENSE_HOUDINI_ENGINE_UNITY_UNREAL:
+		{
+			LicenseType = TEXT("Houdini Engine for Unity/Unreal");
+			break;
+		}
 
-	case HAPI_LICENSE_MAX:
-	default:
-	{
-		return false;
-	}
+		case HAPI_LICENSE_HOUDINI_EDUCATION:
+		{
+			LicenseType = TEXT("Houdini Education");
+			break;
+		}
+
+		case HAPI_LICENSE_HOUDINI_ENGINE_EDUCATION:
+		{
+			LicenseType = TEXT("Houdini Engine Education");
+			break;
+		}
+
+		case HAPI_LICENSE_MAX:
+		default:
+		{
+			return false;
+		}
 	}
 
 	return true;
@@ -3174,46 +3278,27 @@ FHoudiniEngineUtils::IsHoudiniAssetComponentCooking(UObject* InObj)
 }
 
 void
-FHoudiniEngineUtils::UpdateEditorProperties(UObject* InObjectToUpdate, const bool& InForceFullUpdate)
+FHoudiniEngineUtils::UpdateEditorProperties(const bool bInForceFullUpdate)
 {
-	TArray<UObject*> ObjectsToUpdate;
-	ObjectsToUpdate.Add(InObjectToUpdate);
-
 	if (!IsInGameThread())
 	{
 		// We need to be in the game thread to trigger editor properties update
-		AsyncTask(ENamedThreads::GameThread, [ObjectsToUpdate, InForceFullUpdate]()
+		AsyncTask(ENamedThreads::GameThread, [bInForceFullUpdate]()
 		{
-			FHoudiniEngineUtils::UpdateEditorProperties_Internal(ObjectsToUpdate, InForceFullUpdate);
+			FHoudiniEngineUtils::UpdateEditorProperties_Internal(bInForceFullUpdate);
 		});
 	}
 	else
 	{
 		// We're in the game thread, no need  for an async task
-		FHoudiniEngineUtils::UpdateEditorProperties_Internal(ObjectsToUpdate, InForceFullUpdate);
-	}
-}
-
-void
-FHoudiniEngineUtils::UpdateEditorProperties(TArray<UObject*> ObjectsToUpdate, const bool& InForceFullUpdate)
-{
-	if (!IsInGameThread())
-	{
-		// We need to be in the game thread to trigger editor properties update
-		AsyncTask(ENamedThreads::GameThread, [ObjectsToUpdate, InForceFullUpdate]()
-		{
-			FHoudiniEngineUtils::UpdateEditorProperties_Internal(ObjectsToUpdate, InForceFullUpdate);
-		});
-	}
-	else
-	{
-		// We're in the game thread, no need  for an async task
-		FHoudiniEngineUtils::UpdateEditorProperties_Internal(ObjectsToUpdate, InForceFullUpdate);
+		FHoudiniEngineUtils::UpdateEditorProperties_Internal(bInForceFullUpdate);
 	}
 }
 
 void FHoudiniEngineUtils::UpdateBlueprintEditor(UHoudiniAssetComponent* HAC)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::UpdateBlueprintEditor);
+
 	if (!IsInGameThread())
 	{
 		// We need to be in the game thread to trigger editor properties update
@@ -3230,169 +3315,190 @@ void FHoudiniEngineUtils::UpdateBlueprintEditor(UHoudiniAssetComponent* HAC)
 }
 
 void
-FHoudiniEngineUtils::UpdateEditorProperties_Internal(TArray<UObject*> ObjectsToUpdate, const bool& bInForceFullUpdate)
+FHoudiniEngineUtils::UpdateEditorProperties_Internal(const bool bInForceFullUpdate)
 {
-	// TODO: Don't use this method. Prefer using IDetailLayoutBuilder::ForceRefreshDetails(). 
-	// Example to correctly update details panel through IDetailCategoryBuilder / IDetailLayoutBuilder
-	// IDetailCategoryBuilder &CategoryBuilder = StructBuilder.GetParentCategory();
-    // IDetailLayoutBuilder &LayoutBuilder = CategoryBuilder.GetParentLayout();
-    // LayoutBuilder.ForceRefreshDetails();
-	// However, the above code should only be called during UI functions... for now, the following works:
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::UpdateEditorProperties_Internal);
 
-	FPropertyEditorModule& PropertyEditorModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
-	PropertyEditorModule.NotifyCustomizationModuleChanged();
+#if WITH_EDITOR
+#define HOUDINI_USE_DETAILS_FOCUS_HACK 1
 
-#if WITH_EDITOR	
+	// TODO: As an optimization, it might be worth adding an extra parameter to control if we 
+	// update floating property windows. We need to do this whenever we update something visible in
+	// actor details, such as adding/removing a component.
+	if (GUnrealEd)
+	{
+		GUnrealEd->UpdateFloatingPropertyWindows();
+	}
+
 	if (!bInForceFullUpdate)
 	{
 		// bNeedFullUpdate is false only when small changes (parameters value) have been made
-		// We do not reselect the actor to avoid loosing the currently selected parameter
-		if(GUnrealEd)
-			GUnrealEd->UpdateFloatingPropertyWindows();
-
+		// We do not refresh the details view to avoid loosing the currently selected parameter
 		return;
 	}
 
-	// We now want to get all the components/actors owning the objects to update
-	TArray<USceneComponent*> AllSceneComponents;
-	for (auto CurrentObject : ObjectsToUpdate)
+	// Get the property editor module
+	FPropertyEditorModule& PropertyModule =
+		FModuleManager::Get().GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
+
+	//
+	// We want to iterate over all the details panels.
+	// Note that Unreal can have up to 4 of them open at once!
+	//
+	// TODO: These shouldn't be hardcoded strings, but when building on Mac, we get linking errors
+	//       when trying to use LevelEditorTabIds::LevelEditorSelectionDetails
+	//
+	static const FName DetailsTabIdentifiers[] = {
+		"LevelEditorSelectionDetails",
+		"LevelEditorSelectionDetails2",
+		"LevelEditorSelectionDetails3",
+		"LevelEditorSelectionDetails4" };
+
+	for (const FName DetailsPanelName : DetailsTabIdentifiers)
 	{
-		if (!IsValid(CurrentObject))
+		// Locate the details panel.
+		TSharedPtr<IDetailsView> DetailsView = PropertyModule.FindDetailView(DetailsPanelName);
+
+		if (!DetailsView.IsValid())
+		{
+			// We have no details panel, nothing to update.
 			continue;
-
-		// In some case, the object itself is the component
-		USceneComponent* SceneComp = Cast<USceneComponent>(CurrentObject);
-		if (!SceneComp)
-		{
-			SceneComp = Cast<USceneComponent>(CurrentObject->GetOuter());
 		}
 
-		if (IsValid(SceneComp))
+#if HOUDINI_USE_DETAILS_FOCUS_HACK
+		//
+		// Unreal does not maintain focus on the currently focused widget after refreshing the 
+		// details view. Since we are constantly refreshing the details view when tweaking 
+		// parameters, users cannot navigate the UI via keyboard.
+		//
+		// HACK: Attach meta data to parameter widgets to make them identifiable. Before triggering
+		//       a refresh, save the meta data of the currently focused widget. Then restore focus
+		//       on the newly created widget using this meta data.
+		//
+
+		TSharedPtr<FHoudiniParameterWidgetMetaData> ParameterWidgetMetaData = 
+			GetFocusedParameterWidgetMetaData(DetailsView);
+#endif // HOUDINI_USE_DETAILS_FOCUS_HACK
+
+		DetailsView->ForceRefresh();
+
+#if HOUDINI_USE_DETAILS_FOCUS_HACK
+		if (ParameterWidgetMetaData.IsValid())
 		{
-			AllSceneComponents.Add(SceneComp);
-			continue;
+			FocusUsingParameterWidgetMetaData(
+				DetailsView.ToSharedRef(),
+				*ParameterWidgetMetaData);
 		}
+#endif // HOUDINI_USE_DETAILS_FOCUS_HACK
 	}
-
-	TArray<AActor*> AllActors;
-	for (auto CurrentSceneComp : AllSceneComponents)
-	{
-		if (!IsValid(CurrentSceneComp))
-			continue;
-
-		AActor* Actor = CurrentSceneComp->GetOwner();
-		if (IsValid(Actor))
-			AllActors.Add(Actor);
-	}
-
-	// Updating the editor properties can be done in two ways, depending if we're in the BP editor or not
-	// If we have a parent actor, we're not in the BP Editor, so update via the property editor module
-	if (AllActors.Num() > 0)
-	{
-		// Get the property editor module
-		FPropertyEditorModule& PropertyModule =
-			FModuleManager::Get().GetModuleChecked< FPropertyEditorModule >("PropertyEditor");
-
-		// This will actually force a refresh of all the details view
-		//PropertyModule.NotifyCustomizationModuleChanged();
-
-		TArray<UObject*> SelectedActors;
-		for (auto Actor : AllActors)
-		{
-			if (Actor && Actor->IsSelected())
-				SelectedActors.Add(Actor);
-		}
-
-		if (SelectedActors.Num() > 0)
-		{
-			PropertyModule.UpdatePropertyViews(SelectedActors);
-		}
-
-		// We want to iterate on all the details panel
-		static const FName DetailsTabIdentifiers[] =
-		{
-			"LevelEditorSelectionDetails",
-			"LevelEditorSelectionDetails2",
-			"LevelEditorSelectionDetails3",
-			"LevelEditorSelectionDetails4"
-		};
-
-		for (const FName& DetailsPanelName : DetailsTabIdentifiers)
-		{
-			// Locate the details panel.
-			TSharedPtr<IDetailsView> DetailsView = PropertyModule.FindDetailView(DetailsPanelName);
-			if (!DetailsView.IsValid())
-			{
-				// We have no details panel, nothing to update.
-				continue;
-			}
-
-			// Get the selected actors for this details panels and check if one of ours belongs to it
-			const TArray<TWeakObjectPtr<AActor>>& SelectedDetailActors = DetailsView->GetSelectedActors();
-			bool bFoundActor = false;
-			for (int32 ActorIdx = 0; ActorIdx < SelectedDetailActors.Num(); ActorIdx++)
-			{
-				TWeakObjectPtr<AActor> SelectedActor = SelectedDetailActors[ActorIdx];
-				if (SelectedActor.IsValid() && AllActors.Contains(SelectedActor.Get()))
-				{
-					bFoundActor = true;
-					break;
-				}
-			}
-			
-			// None of our actors belongs to this detail panel, no need to update it
-			if (!bFoundActor)
-				continue;
-
-			// Refresh that details panels using its current selection
-			TArray<UObject*> Selection;
-			for (auto DetailsActor : SelectedDetailActors)
-			{
-				if (DetailsActor.IsValid())
-					Selection.Add(DetailsActor.Get());
-			}
-
-			// Reset selected actors, force refresh and override the lock.
-			DetailsView->SetObjects(SelectedActors, bInForceFullUpdate, true);
-
-			if (GUnrealEd)
-				GUnrealEd->UpdateFloatingPropertyWindows();
-		}
-	}
-	else
-	{
-		// TODO: Do we need to do Blueprint Editor updates here or can we confine it to "post output processing"?
-		
-	}
-
-	/*
-	// Reset the full update flag
-	if (bNeedFullUpdate)
-		HAC->SetEditorPropertiesNeedFullUpdate(false);
-	*/
-
-	return;
-#endif
+#endif // WITH_EDITOR
 }
 
-void FHoudiniEngineUtils::UpdateBlueprintEditor_Internal(UHoudiniAssetComponent* HAC)
+TSharedPtr<FHoudiniParameterWidgetMetaData> 
+FHoudiniEngineUtils::GetFocusedParameterWidgetMetaData(TSharedPtr<IDetailsView> DetailsView)
 {
-	//UHoudiniAssetComponent* HACTemplate = HAC->GetCachedTemplate();
-	//UBlueprintGeneratedClass* OwnerBPClass = Cast<UBlueprintGeneratedClass>(HACTemplate->GetOuter());
-	//if (!OwnerBPClass)
-	//	return;
+#if WITH_EDITOR
+	if (!DetailsView.IsValid())
+	{
+		return nullptr;
+	}
 
-	///*
-	//FBlueprintEditor* BlueprintEditor = static_cast<FBlueprintEditor*>(FAssetEditorManager::Get().FindEditorForAsset(OwnerBPClass->ClassGeneratedBy, false));
-	//if (!BlueprintEditor)
-	//	return;
-	//*/
+	TSharedPtr<SWidget> FocusedWidget = FSlateApplication::Get().GetKeyboardFocusedWidget();
 
-	//// Close the mesh editor to prevent crashing. Reopen it after the mesh has been built.
-	//UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
-	//FBlueprintEditor* BlueprintEditor = static_cast<FBlueprintEditor*>(AssetEditorSubsystem->FindEditorForAsset(OwnerBPClass->ClassGeneratedBy, false));
-	//if (!BlueprintEditor)
-	//	return;
+	if (FocusedWidget.IsValid())
+	{
+		// Before we grab the meta data of the focused widget, we want to make sure that it is
+		// inside our details view. To do this, check if any of its ancestors are the current
+		// details view.
+		for (auto Widget = FocusedWidget; Widget.IsValid(); Widget = Widget->GetParentWidget())
+		{
+			if (Widget == DetailsView)
+			{
+				return FocusedWidget->GetMetaData<FHoudiniParameterWidgetMetaData>();
+			}
+		}
+	}
+#endif // WITH_EDITOR
+
+	return nullptr;
+}
+
+bool 
+FHoudiniEngineUtils::FocusUsingParameterWidgetMetaData(
+	TSharedRef<SWidget> AncestorWidget, 
+	const FHoudiniParameterWidgetMetaData& ParameterWidgetMetaData)
+{
+#if WITH_EDITOR
+	//
+	// HACK: Manually tick the widget before accessing its children. We need to do this because
+	//       refreshing a details view will only mark the child detail tree as dirty, without
+	//       actually adding the newly created widgets as children.
+	//
+	//       - See SDetailsViewBase::RefreshTree which requests the refresh.
+	//       - See STableViewBase::Tick which actually does the refresh.
+	//
+	//       As a result, Slate cannot construct a path to the new widgets we wish to focus, since
+	//       before the tick, the widgets in our detail rows do not have a parent.
+	//
+	//       Unfortunately there doesn't seem to be a way to subscribe to a "post tick" event in
+	//       Slate, so we resort to manually ticking these widgets.
+	//
+	//       We could also manually tick the entire Slate application, however we cannot control the
+	//       delta time this way and this introduces a delay before the new widget is re-focused.
+	//
+	//       We use cached widget geometry with the hope that it is correct.
+	//
+	AncestorWidget->Tick(AncestorWidget->GetTickSpaceGeometry(), 0.f, 0.f);
+
+	// Important: We use GetAllChildren and not GetChildren. 
+	// Widgets might choose to not expose some of their children via GetChildren.
+	FChildren* const Children = AncestorWidget->GetAllChildren();
+
+	for (int32 i = 0; i < Children->Num(); ++i)
+	{
+		const TSharedRef<SWidget> Child = Children->GetChildAt(i);
+		const TSharedPtr ChildMetaData = Child->GetMetaData<FHoudiniParameterWidgetMetaData>();
+
+		if (ChildMetaData.IsValid() && ParameterWidgetMetaData == *ChildMetaData)
+		{
+			TSharedPtr<SWidget> WidgetToSelect = Child;
+
+			//
+			// Try focus the desired widget.
+			// - If this fails, it is possible that Slate cannot construct a path to it.
+			// - However, usually the parent can be focused. 
+			// - Thus we go over all ancestors to try focus them.
+			//
+			// TODO: Explore the possibility of constructing the path to the widget manually.
+			//       Maybe this would allow focusing widgets that currently cannot not be focused.
+			//
+			while (WidgetToSelect.IsValid())
+			{
+				if (FSlateApplication::Get().SetKeyboardFocus(WidgetToSelect))
+				{
+					return true;
+				}
+
+				WidgetToSelect = Child->GetParentWidget();
+			}
+
+			return false; // Failed to reselect keyboard focused widget!
+
+		}
+
+		if (FocusUsingParameterWidgetMetaData(Child, ParameterWidgetMetaData))
+		{
+			return true;
+		}
+	}
+#endif // WITH_EDITOR
+
+	return false;
+}
+
+void
+FHoudiniEngineUtils::UpdateBlueprintEditor_Internal(UHoudiniAssetComponent* HAC)
+{
 	FBlueprintEditor* BlueprintEditor = FHoudiniEngineRuntimeUtils::GetBlueprintEditor(HAC);
 	if (!BlueprintEditor)
 		return;
@@ -3411,6 +3517,7 @@ void FHoudiniEngineUtils::UpdateBlueprintEditor_Internal(UHoudiniAssetComponent*
 			
 	// Also somehow reselect ?
 }
+
 HAPI_Result
 FHoudiniEngineUtils::HapiSetAttributeFloatData(
 	const TArray<float>& InFloatData,
@@ -3423,9 +3530,12 @@ FHoudiniEngineUtils::HapiSetAttributeFloatData(
 	if (InFloatData.Num() != InAttributeInfo.count * InAttributeInfo.tupleSize)
 		return HAPI_RESULT_INVALID_ARGUMENT;
 
-    return FHoudiniEngineUtils::HapiSetAttributeFloatData(InFloatData.GetData(), InNodeId, InPartId, InAttributeName,
-                                                          InAttributeInfo, bAttemptRunLengthEncoding);
+	FHoudiniHapiAccessor Accessor(InNodeId, InPartId, TCHAR_TO_ANSI(*InAttributeName));
+	bool bSuccess = Accessor.SetAttributeData(InAttributeInfo, InFloatData);
+
+    return bSuccess ? HAPI_RESULT_SUCCESS : HAPI_RESULT_FAILURE;
 }
+
 
 HAPI_Result
 FHoudiniEngineUtils::HapiSetAttributeFloatData(
@@ -3436,7 +3546,7 @@ FHoudiniEngineUtils::HapiSetAttributeFloatData(
 	const HAPI_AttributeInfo& InAttributeInfo,
 	bool bAttemptRunLengthEncoding)
 {
-    SCOPED_FUNCTION_LABELLED_TIMER(InAttributeName);
+    H_SCOPED_FUNCTION_DYNAMIC_LABEL(InAttributeName);
 
 	if (InAttributeInfo.count <= 0 || InAttributeInfo.tupleSize < 1)
 		return HAPI_RESULT_INVALID_ARGUMENT;
@@ -3465,7 +3575,6 @@ FHoudiniEngineUtils::HapiSetAttributeFloatData(
 			return HAPI_RESULT_SUCCESS;
 		}
 	}
-
 
 	int32 ChunkSize = THRIFT_MAX_CHUNKSIZE / InAttributeInfo.tupleSize;
 	if (InAttributeInfo.count > ChunkSize)
@@ -3510,8 +3619,10 @@ FHoudiniEngineUtils::HapiSetAttributeIntData(
 	if (InIntData.Num() != InAttributeInfo.count * InAttributeInfo.tupleSize)
 		return HAPI_RESULT_INVALID_ARGUMENT;
 
-	return FHoudiniEngineUtils::HapiSetAttributeIntData(InIntData.GetData(), InNodeId, InPartId, InAttributeName,
-                                                        InAttributeInfo, bAttemptRunLengthEncoding);
+	FHoudiniHapiAccessor Accessor(InNodeId, InPartId, TCHAR_TO_ANSI(*InAttributeName));
+	bool bSuccess = Accessor.SetAttributeData(InAttributeInfo, InIntData);
+
+	return bSuccess ? HAPI_RESULT_SUCCESS : HAPI_RESULT_FAILURE;
 }
 
 HAPI_Result
@@ -3522,7 +3633,7 @@ FHoudiniEngineUtils::HapiSetAttributeFloatUniqueData(
 	const FString& InAttributeName,
 	const HAPI_AttributeInfo& InAttributeInfo)
 {
-	SCOPED_FUNCTION_LABELLED_TIMER(InAttributeName);
+	H_SCOPED_FUNCTION_DYNAMIC_LABEL(InAttributeName);
 
 	if (InAttributeInfo.count <= 0 || InAttributeInfo.tupleSize < 1)
 		return HAPI_RESULT_INVALID_ARGUMENT;
@@ -3543,7 +3654,7 @@ FHoudiniEngineUtils::HapiSetAttributeIntUniqueData(
 	const FString& InAttributeName,
 	const HAPI_AttributeInfo& InAttributeInfo)
 {
-	SCOPED_FUNCTION_LABELLED_TIMER(InAttributeName);
+	H_SCOPED_FUNCTION_DYNAMIC_LABEL(InAttributeName);
 
 	if (InAttributeInfo.count <= 0 || InAttributeInfo.tupleSize < 1)
 		return HAPI_RESULT_INVALID_ARGUMENT;
@@ -3565,7 +3676,7 @@ FHoudiniEngineUtils::HapiSetAttributeIntData(
 	const HAPI_AttributeInfo& InAttributeInfo,
 	bool bAttemptRunLengthEncoding)
 {
-    SCOPED_FUNCTION_LABELLED_TIMER(InAttributeName);
+    H_SCOPED_FUNCTION_DYNAMIC_LABEL(InAttributeName);
 
 	if (InAttributeInfo.count <= 0 || InAttributeInfo.tupleSize < 1)
 		return HAPI_RESULT_INVALID_ARGUMENT;
@@ -3635,8 +3746,10 @@ FHoudiniEngineUtils::HapiSetAttributeUIntData(
 	const FString& InAttributeName,
 	const HAPI_AttributeInfo& InAttributeInfo)
 {
-	return FHoudiniEngineUtils::HapiSetAttributeInt64Data(
-		InIntData, InNodeId, InPartId, InAttributeName, InAttributeInfo);
+	FHoudiniHapiAccessor Accessor(InNodeId, InPartId, TCHAR_TO_ANSI(*InAttributeName));
+	bool bSuccess = Accessor.SetAttributeData(InAttributeInfo, InIntData);
+
+	return bSuccess ? HAPI_RESULT_SUCCESS : HAPI_RESULT_FAILURE;
 }
 
 HAPI_Result
@@ -3647,8 +3760,10 @@ FHoudiniEngineUtils::HapiSetAttributeUIntData(
 	const FString& InAttributeName,
 	const HAPI_AttributeInfo& InAttributeInfo)
 {
-	return FHoudiniEngineUtils::HapiSetAttributeInt64Data(
-		InIntData, InNodeId, InPartId, InAttributeName, InAttributeInfo);
+	FHoudiniHapiAccessor Accessor(InNodeId, InPartId, TCHAR_TO_ANSI(*InAttributeName));
+	bool bSuccess = Accessor.SetAttributeData(InAttributeInfo, InIntData);
+
+	return bSuccess ? HAPI_RESULT_SUCCESS : HAPI_RESULT_FAILURE;
 }
 
 HAPI_Result
@@ -3662,8 +3777,10 @@ FHoudiniEngineUtils::HapiSetAttributeInt8Data(
 	if (InByteData.Num() != InAttributeInfo.count * InAttributeInfo.tupleSize)
 		return HAPI_RESULT_INVALID_ARGUMENT;
 
-	return FHoudiniEngineUtils::HapiSetAttributeInt8Data(
-		InByteData.GetData(), InNodeId, InPartId, InAttributeName, InAttributeInfo);
+	FHoudiniHapiAccessor Accessor(InNodeId, InPartId, TCHAR_TO_ANSI(*InAttributeName));
+	bool bSuccess = Accessor.SetAttributeData(InAttributeInfo, InByteData);
+
+	return bSuccess ? HAPI_RESULT_SUCCESS : HAPI_RESULT_FAILURE;
 }
 
 HAPI_Result
@@ -3674,7 +3791,7 @@ FHoudiniEngineUtils::HapiSetAttributeInt8Data(
 	const FString& InAttributeName,
 	const HAPI_AttributeInfo& InAttributeInfo)
 {
-    SCOPED_FUNCTION_LABELLED_TIMER(InAttributeName);
+    H_SCOPED_FUNCTION_DYNAMIC_LABEL(InAttributeName);
 
 	if (InAttributeInfo.count <= 0 || InAttributeInfo.tupleSize < 1)
 		return HAPI_RESULT_INVALID_ARGUMENT;
@@ -3722,8 +3839,11 @@ FHoudiniEngineUtils::HapiSetAttributeUInt8Data(
 	if (InByteData.Num() != InAttributeInfo.count * InAttributeInfo.tupleSize)
 		return HAPI_RESULT_INVALID_ARGUMENT;
 
-	return FHoudiniEngineUtils::HapiSetAttributeUInt8Data(
-		InByteData.GetData(), InNodeId, InPartId, InAttributeName, InAttributeInfo);
+	FHoudiniHapiAccessor Accessor(InNodeId, InPartId, TCHAR_TO_ANSI(*InAttributeName));
+	bool bSuccess = Accessor.SetAttributeData(InAttributeInfo, InByteData);
+
+	return bSuccess ? HAPI_RESULT_SUCCESS : HAPI_RESULT_FAILURE;
+
 }
 
 HAPI_Result
@@ -3734,7 +3854,7 @@ FHoudiniEngineUtils::HapiSetAttributeUInt8Data(
 	const FString& InAttributeName,
 	const HAPI_AttributeInfo& InAttributeInfo)
 {
-    SCOPED_FUNCTION_LABELLED_TIMER(InAttributeName);
+    H_SCOPED_FUNCTION_DYNAMIC_LABEL(InAttributeName);
 
 	if (InAttributeInfo.count <= 0 || InAttributeInfo.tupleSize < 1)
 		return HAPI_RESULT_INVALID_ARGUMENT;
@@ -3779,13 +3899,15 @@ FHoudiniEngineUtils::HapiSetAttributeInt16Data(
 	const FString& InAttributeName,
 	const HAPI_AttributeInfo& InAttributeInfo)
 {
-    SCOPED_FUNCTION_LABELLED_TIMER(InAttributeName);
+    H_SCOPED_FUNCTION_DYNAMIC_LABEL(InAttributeName);
 
 	if (InShortData.Num() != InAttributeInfo.count * InAttributeInfo.tupleSize)
 		return HAPI_RESULT_INVALID_ARGUMENT;
 
-	return FHoudiniEngineUtils::HapiSetAttributeInt16Data(
-		InShortData.GetData(), InNodeId, InPartId, InAttributeName, InAttributeInfo);
+	FHoudiniHapiAccessor Accessor(InNodeId, InPartId, TCHAR_TO_ANSI(*InAttributeName));
+	bool bSuccess = Accessor.SetAttributeData(InAttributeInfo, InShortData);
+
+	return bSuccess ? HAPI_RESULT_SUCCESS : HAPI_RESULT_FAILURE;
 }
 
 HAPI_Result
@@ -3796,7 +3918,7 @@ FHoudiniEngineUtils::HapiSetAttributeInt16Data(
 	const FString& InAttributeName,
 	const HAPI_AttributeInfo& InAttributeInfo)
 {
-    SCOPED_FUNCTION_LABELLED_TIMER(InAttributeName);
+    H_SCOPED_FUNCTION_DYNAMIC_LABEL(InAttributeName);
 
 	if (InAttributeInfo.count <= 0 || InAttributeInfo.tupleSize < 1)
 		return HAPI_RESULT_INVALID_ARGUMENT;
@@ -3841,8 +3963,10 @@ FHoudiniEngineUtils::HapiSetAttributeUInt16Data(
 	const FString& InAttributeName,
 	const HAPI_AttributeInfo& InAttributeInfo)
 {
-	return FHoudiniEngineUtils::HapiSetAttributeIntData(
-		InShortData, InNodeId, InPartId, InAttributeName, InAttributeInfo);
+	FHoudiniHapiAccessor Accessor(InNodeId, InPartId, TCHAR_TO_ANSI(*InAttributeName));
+	bool bSuccess = Accessor.SetAttributeData(InAttributeInfo, InShortData);
+
+	return bSuccess ? HAPI_RESULT_SUCCESS : HAPI_RESULT_FAILURE;
 }
 
 HAPI_Result
@@ -3853,8 +3977,10 @@ FHoudiniEngineUtils::HapiSetAttributeUInt16Data(
 	const FString& InAttributeName,
 	const HAPI_AttributeInfo& InAttributeInfo)
 {
-	return FHoudiniEngineUtils::HapiSetAttributeIntData(
-		InShortData, InNodeId, InPartId, InAttributeName, InAttributeInfo);
+	FHoudiniHapiAccessor Accessor(InNodeId, InPartId, TCHAR_TO_ANSI(*InAttributeName));
+	bool bSuccess = Accessor.SetAttributeData(InAttributeInfo, InShortData);
+
+	return bSuccess ? HAPI_RESULT_SUCCESS : HAPI_RESULT_FAILURE;
 }
 
 HAPI_Result
@@ -3868,8 +3994,10 @@ FHoudiniEngineUtils::HapiSetAttributeInt64Data(
 	if (InInt64Data.Num() != InAttributeInfo.count * InAttributeInfo.tupleSize)
 		return HAPI_RESULT_INVALID_ARGUMENT;
 
-	return FHoudiniEngineUtils::HapiSetAttributeInt64Data(
-		InInt64Data.GetData(), InNodeId, InPartId, InAttributeName, InAttributeInfo);
+	FHoudiniHapiAccessor Accessor(InNodeId, InPartId, TCHAR_TO_ANSI(*InAttributeName));
+	bool bSuccess = Accessor.SetAttributeData(InAttributeInfo, InInt64Data);
+
+	return bSuccess ? HAPI_RESULT_SUCCESS : HAPI_RESULT_FAILURE;
 }
 
 HAPI_Result
@@ -3880,7 +4008,7 @@ FHoudiniEngineUtils::HapiSetAttributeInt64Data(
 	const FString& InAttributeName,
 	const HAPI_AttributeInfo& InAttributeInfo)
 {
-    SCOPED_FUNCTION_LABELLED_TIMER(InAttributeName);
+    H_SCOPED_FUNCTION_DYNAMIC_LABEL(InAttributeName);
 
 	if (InAttributeInfo.count <= 0 || InAttributeInfo.tupleSize < 1)
 		return HAPI_RESULT_INVALID_ARGUMENT;
@@ -3973,20 +4101,10 @@ FHoudiniEngineUtils::HapiSetAttributeUInt64Data(
 	const FString& InAttributeName,
 	const HAPI_AttributeInfo& InAttributeInfo)
 {
-	return FHoudiniEngineUtils::HapiSetAttributeInt64Data(
-		InInt64Data, InNodeId, InPartId, InAttributeName, InAttributeInfo);
-}
+	FHoudiniHapiAccessor Accessor(InNodeId, InPartId, TCHAR_TO_ANSI(*InAttributeName));
+	bool bSuccess = Accessor.SetAttributeData(InAttributeInfo, InInt64Data);
 
-HAPI_Result
-FHoudiniEngineUtils::HapiSetAttributeUInt64Data(
-	const int64* InInt64Data,
-	const HAPI_NodeId& InNodeId,
-	const HAPI_PartId& InPartId,
-	const FString& InAttributeName,
-	const HAPI_AttributeInfo& InAttributeInfo)
-{
-	return FHoudiniEngineUtils::HapiSetAttributeInt64Data(
-		InInt64Data, InNodeId, InPartId, InAttributeName, InAttributeInfo);
+	return bSuccess ? HAPI_RESULT_SUCCESS : HAPI_RESULT_FAILURE;
 }
 
 HAPI_Result
@@ -4000,8 +4118,11 @@ FHoudiniEngineUtils::HapiSetAttributeDoubleData(
 	if (InDoubleData.Num() != InAttributeInfo.count * InAttributeInfo.tupleSize)
 		return HAPI_RESULT_INVALID_ARGUMENT;
 
-	return FHoudiniEngineUtils::HapiSetAttributeDoubleData(
-		InDoubleData.GetData(), InNodeId, InPartId, InAttributeName, InAttributeInfo);
+	FHoudiniHapiAccessor Accessor(InNodeId, InPartId, TCHAR_TO_ANSI(*InAttributeName));
+	bool bSuccess = Accessor.SetAttributeData(InAttributeInfo, InDoubleData);
+
+	return bSuccess ? HAPI_RESULT_SUCCESS : HAPI_RESULT_FAILURE;
+
 }
 
 HAPI_Result
@@ -4012,7 +4133,7 @@ FHoudiniEngineUtils::HapiSetAttributeDoubleData(
 	const FString& InAttributeName,
 	const HAPI_AttributeInfo& InAttributeInfo)
 {
-    SCOPED_FUNCTION_LABELLED_TIMER(InAttributeName);
+    H_SCOPED_FUNCTION_DYNAMIC_LABEL(InAttributeName);
 
 	if (InAttributeInfo.count <= 0 || InAttributeInfo.tupleSize < 1)
 		return HAPI_RESULT_INVALID_ARGUMENT;
@@ -4055,7 +4176,7 @@ FHoudiniEngineUtils::HapiSetVertexList(
 	const HAPI_NodeId& InNodeId,
 	const HAPI_PartId& InPartId)
 {
-    SCOPED_FUNCTION_TIMER();
+    H_SCOPED_FUNCTION_TIMER();
 
 	int32 ListNum = InVertexListData.Num();
 	if (ListNum < 1)
@@ -4094,7 +4215,7 @@ FHoudiniEngineUtils::HapiSetFaceCounts(
 	const HAPI_NodeId& InNodeId,
 	const HAPI_PartId& InPartId)
 {
-    SCOPED_FUNCTION_TIMER();
+    H_SCOPED_FUNCTION_TIMER();
 
 	int32 FaceCountsNum = InFaceCounts.Num();
 	if (FaceCountsNum < 1)
@@ -4127,7 +4248,7 @@ FHoudiniEngineUtils::HapiSetFaceCounts(
 }
 
 HAPI_Result
-FHoudiniEngineUtils::HapiSetAttributeStringData(
+FHoudiniEngineUtils::HapiSetAttributeStringUniqueData(
 	const FString& InString,
 	const HAPI_NodeId& InNodeId,
 	const HAPI_PartId& InPartId,
@@ -4155,7 +4276,7 @@ FHoudiniEngineUtils::HapiSetAttributeStringMap(
 	const FString& InAttributeName,
 	const HAPI_AttributeInfo& InAttributeInfo)
 {
-    SCOPED_FUNCTION_LABELLED_TIMER(InAttributeName);
+    H_SCOPED_FUNCTION_DYNAMIC_LABEL(InAttributeName);
 
 	FHoudiniEngineRawStrings IndexedRawStrings = InIndexedStringMap.GetRawStrings();
 	TArray<int> IndexArray = InIndexedStringMap.GetIds();
@@ -4176,7 +4297,7 @@ FHoudiniEngineUtils::HapiSetAttributeStringData(
 	const FString& InAttributeName,
 	const HAPI_AttributeInfo& InAttributeInfo )
 {
-    SCOPED_FUNCTION_LABELLED_TIMER(InAttributeName);
+    H_SCOPED_FUNCTION_DYNAMIC_LABEL(InAttributeName);
 
 	TArray<const char *> StringDataArray;
 	for (const auto& CurrentString : InStringArray)
@@ -4231,7 +4352,7 @@ FHoudiniEngineUtils::HapiSetAttributeStringArrayData(
 	const HAPI_AttributeInfo& InAttributeInfo,
 	const TArray<int>& SizesFixedArray)
 {
-    SCOPED_FUNCTION_LABELLED_TIMER(InAttributeName);
+    H_SCOPED_FUNCTION_DYNAMIC_LABEL(InAttributeName);
 
 	TArray<const char*> StringDataArray;
 	for (const auto& CurrentString : InStringArray)
@@ -4287,13 +4408,64 @@ FHoudiniEngineUtils::HapiSetAttributeStringArrayData(
 
 
 HAPI_Result
+FHoudiniEngineUtils::HapiSetAttributeDictionaryData(const TArray<FString>& JSONData,
+	const HAPI_NodeId& InNodeId, const HAPI_PartId& InPartId, const FString& InAttributeName,
+	const HAPI_AttributeInfo& InAttributeInfo)
+{
+	H_SCOPED_FUNCTION_DYNAMIC_LABEL(InAttributeName);
+
+	TArray<const char *> RawStringData;
+	for (const FString& Data : JSONData)
+	{
+		RawStringData.Add(FHoudiniEngineUtils::ExtractRawString(Data));
+	}
+
+	// Send strings in smaller chunks due to their potential size
+	int32 ChunkSize = (THRIFT_MAX_CHUNKSIZE / 100) / InAttributeInfo.tupleSize;
+
+	HAPI_Result Result = HAPI_RESULT_FAILURE;
+	if (InAttributeInfo.count > ChunkSize)
+	{
+		// Set the attributes in chunks
+		for (int32 ChunkStart = 0; ChunkStart < InAttributeInfo.count; ChunkStart += ChunkSize)
+		{
+			const int32 CurCount = InAttributeInfo.count - ChunkStart > ChunkSize ? ChunkSize : InAttributeInfo.count - ChunkStart;
+	
+			Result = FHoudiniApi::SetAttributeDictionaryData(
+				FHoudiniEngine::Get().GetSession(),
+				InNodeId, InPartId, TCHAR_TO_ANSI(*InAttributeName),
+				&InAttributeInfo, RawStringData.GetData() + ChunkStart * InAttributeInfo.tupleSize,
+				ChunkStart, CurCount);
+	
+			if (Result != HAPI_RESULT_SUCCESS)
+				break;
+		}
+	}
+	else
+	{
+		// Set all the attribute values once
+		Result = FHoudiniApi::SetAttributeDictionaryData(
+			FHoudiniEngine::Get().GetSession(),
+			InNodeId, InPartId, TCHAR_TO_ANSI(*InAttributeName),
+			&InAttributeInfo, RawStringData.GetData(),
+			0, RawStringData.Num());
+	}
+
+	// ExtractRawString allocates memory using malloc, free it!
+	FreeRawStringMemory(RawStringData);
+
+	return Result;
+}
+
+
+HAPI_Result
 FHoudiniEngineUtils::HapiSetHeightFieldData(
 	const HAPI_NodeId& InNodeId,
 	const HAPI_PartId& InPartId,
 	const TArray<float>& InFloatValues,
 	const FString& InHeightfieldName)
 {
-    SCOPED_FUNCTION_TIMER();
+    H_SCOPED_FUNCTION_TIMER();
 
 	int32 NumValues = InFloatValues.Num();
 	if (NumValues < 1)
@@ -4333,48 +4505,6 @@ FHoudiniEngineUtils::HapiSetHeightFieldData(
 	return Result;
 }
 
-
-HAPI_Result
-FHoudiniEngineUtils::HapiGetHeightFieldData(
-	const HAPI_NodeId& InNodeId,
-	const HAPI_PartId& InPartId,
-	TArray<float>& OutFloatValues)
-{
-    SCOPED_FUNCTION_TIMER();
-
-	int32 NumValues = OutFloatValues.Num();
-	if (NumValues < 1)
-		return HAPI_RESULT_INVALID_ARGUMENT;
-
-	// float data
-	float* HeightData = OutFloatValues.GetData();
-
-	int32 ChunkSize = THRIFT_MAX_CHUNKSIZE;
-	HAPI_Result Result = HAPI_RESULT_FAILURE;
-	if (NumValues > ChunkSize)
-	{
-		// Get the heightfield data in chunks
-		for (int32 ChunkStart = 0; ChunkStart < NumValues; ChunkStart += ChunkSize)
-		{
-			int32 CurCount = NumValues - ChunkStart > ChunkSize ? ChunkSize : NumValues - ChunkStart;
-
-			Result = FHoudiniApi::GetHeightFieldData(
-				FHoudiniEngine::Get().GetSession(),
-				InNodeId, InPartId, &HeightData[ChunkStart], ChunkStart, CurCount);
-
-			if (Result != HAPI_RESULT_SUCCESS)
-				break;
-		}
-	}
-	else
-	{
-		Result = FHoudiniApi::GetHeightFieldData(
-			FHoudiniEngine::Get().GetSession(),
-			InNodeId, InPartId, HeightData, 0, NumValues);
-	}
-
-	return Result;
-}
 
 char *
 FHoudiniEngineUtils::ExtractRawString(const FString& InString)
@@ -4433,7 +4563,7 @@ FHoudiniEngineUtils::AddHoudiniLogoToComponent(UHoudiniAssetComponent* HAC)
 	if (!HoudiniLogoSM)
 		return false;
 
-	UStaticMeshComponent * HoudiniLogoSMC = NewObject< UStaticMeshComponent >(
+	UStaticMeshComponent * HoudiniLogoSMC = NewObject<UStaticMeshComponent>(
 		HAC, UStaticMeshComponent::StaticClass(), NAME_None, RF_Transactional);
 
 	if (!HoudiniLogoSMC)
@@ -4522,7 +4652,7 @@ FHoudiniEngineUtils::HapiGetVertexListForGroup(
 	const FString& GroupName,
 	const TArray<int32>& FullVertexList,
 	TArray<int32>& NewVertexList,
-	TArray<int32>& AllVertexList,
+	TArray<int32>& UsedVertices,
 	TArray<int32>& AllFaceList,
 	TArray<int32>& AllGroupFaceIndices,
 	int32& FirstValidVertex,
@@ -4572,11 +4702,11 @@ FHoudiniEngineUtils::HapiGetVertexListForGroup(
 		}
 
 		// Mark these vertex indices as used.
-		if (AllVertexList.IsValidIndex(LastVertexIdx))
+		if (UsedVertices.IsValidIndex(LastVertexIdx))
 		{
-			AllVertexList[FirstVertexIdx] = 1;
-			AllVertexList[SecondVertexIdx] = 1;
-			AllVertexList[LastVertexIdx] = 1;
+			UsedVertices[FirstVertexIdx] = 1;
+			UsedVertices[SecondVertexIdx] = 1;
+			UsedVertices[LastVertexIdx] = 1;
 		}
 
 		// Mark this face as used.
@@ -4664,9 +4794,9 @@ FHoudiniEngineUtils::HapiGetGroupNames(
 }
 
 bool FHoudiniEngineUtils::HapiGetGroupMembership(
-	HAPI_NodeId GeoId, const HAPI_PartId& PartId,
+	HAPI_NodeId GeoId, const HAPI_PartId PartId,
 	const HAPI_GroupType& GroupType, const FString& GroupName,
-	int32 & OutGroupMembership)
+	int32 & OutGroupMembership, int Start, int Length)
 {
 	OutGroupMembership = 0;
 
@@ -4676,7 +4806,7 @@ bool FHoudiniEngineUtils::HapiGetGroupMembership(
 	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetGroupMembership(
 			FHoudiniEngine::Get().GetSession(),
 			GeoId, PartId, GroupType, ConvertedGroupName.c_str(),
-			&AllEqual, &OutGroupMembership, 0, 1), false);
+			&AllEqual, &OutGroupMembership, Start, Length), false);
 
 	return true;
 }
@@ -4709,553 +4839,6 @@ FHoudiniEngineUtils::HapiGetGroupMembership(
 	}
 
 	return true;
-}
-
-bool
-FHoudiniEngineUtils::HapiGetAttributeDataAsFloat(
-	const HAPI_NodeId& InGeoId,
-	const HAPI_PartId& InPartId,
-	const char * InAttribName,
-	HAPI_AttributeInfo& OutAttributeInfo,
-	TArray<float>& OutData,
-	int32 InTupleSize,
-	HAPI_AttributeOwner InOwner,
-	const int32& InStartIndex,
-	const int32& InCount)
-{
-	TRACE_CPUPROFILER_EVENT_SCOPE(TEXT("FHoudiniEngineUtils::HapiGetAttributeDataAsFloat"));
-
-	OutAttributeInfo.exists = false;
-
-	// Reset container size.
-	OutData.SetNumUninitialized(0);
-
-	int32 OriginalTupleSize = InTupleSize;
-
-	HAPI_AttributeInfo AttributeInfo;
-	FHoudiniApi::AttributeInfo_Init(&AttributeInfo);
-	if (InOwner == HAPI_ATTROWNER_INVALID)
-	{
-		for (int32 AttrIdx = 0; AttrIdx < HAPI_ATTROWNER_MAX; ++AttrIdx)
-		{
-			HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetAttributeInfo(
-				FHoudiniEngine::Get().GetSession(),
-				InGeoId, InPartId, InAttribName,
-				(HAPI_AttributeOwner)AttrIdx, &AttributeInfo), false);
-
-			if (AttributeInfo.exists)
-				break;
-		}
-	}
-	else
-	{
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetAttributeInfo(
-			FHoudiniEngine::Get().GetSession(), 
-			InGeoId, InPartId, InAttribName,
-			InOwner, &AttributeInfo), false);
-	}
-
-	if (!AttributeInfo.exists)
-		return false;
-
-	if (OriginalTupleSize > 0)
-		AttributeInfo.tupleSize = OriginalTupleSize;
-
-	// Store the retrieved attribute information.
-	OutAttributeInfo = AttributeInfo;
-
-	// Handle partial reading of attributes
-	int32 Start = 0;
-	if (InStartIndex > 0 && InStartIndex < AttributeInfo.count)
-		Start = InStartIndex;
-
-	int32 Count = AttributeInfo.count;
-	if (InCount > 0)
-	{
-		if ((Start + InCount) <= AttributeInfo.count)
-			Count = InCount;
-		else
-			Count = AttributeInfo.count - Start;
-	}
-
-	if (AttributeInfo.storage == HAPI_STORAGETYPE_FLOAT)
-	{
-		// Allocate sufficient buffer for data.
-		OutData.SetNum(Count * AttributeInfo.tupleSize);
-
-		// Fetch the values
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetAttributeFloatData(
-			FHoudiniEngine::Get().GetSession(),
-			InGeoId, InPartId, InAttribName,
-			&AttributeInfo, -1, &OutData[0],
-			Start, Count), false);
-
-		return true;
-	}
-    else if (AttributeInfo.storage == HAPI_STORAGETYPE_FLOAT64)
-    {
-        // Allocate sufficient buffer for data.
-        OutData.SetNum(Count * AttributeInfo.tupleSize);
-
-		TArray<double> Float64Data;
-        Float64Data.SetNum(OutData.Num());
-
-        // Fetch the values
-        HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetAttributeFloat64Data(
-		    FHoudiniEngine::Get().GetSession(), InGeoId,
-            InPartId, InAttribName, &AttributeInfo, -1,
-            &Float64Data[0], Start, Count), false);
-
-		for (int Index = 0; Index < OutData.Num(); Index++)
-            OutData[Index] = static_cast<float>(Float64Data[Index]);
-
-        return true;
-    }
-	else if (AttributeInfo.storage == HAPI_STORAGETYPE_INT)
-	{
-		// Expected Float, found an int, try to convert the attribute
-
-		// Allocate sufficient buffer for data.
-		TArray<int32> IntData;
-		IntData.SetNum(Count * AttributeInfo.tupleSize);
-
-		// Fetch the values
-		if(HAPI_RESULT_SUCCESS == FHoudiniApi::GetAttributeIntData(
-			FHoudiniEngine::Get().GetSession(),
-			InGeoId, InPartId, InAttribName,
-			&AttributeInfo,	-1,	&IntData[0],
-			Start, Count))
-		{
-			OutData.SetNum(IntData.Num());
-			for (int32 Idx = 0; Idx < IntData.Num(); Idx++)
-			{
-				OutData[Idx] = (float)IntData[Idx];
-			}
-
-			HOUDINI_LOG_MESSAGE(TEXT("Attribute %s was expected to be a float attribute, its value had to be converted from integer."), *FString(InAttribName));
-			return true;
-		}
-	}
-	else if (AttributeInfo.storage == HAPI_STORAGETYPE_STRING)
-	{
-		// Expected Float, found a string, try to convert the attribute
-		TArray<FString> StringData;
-		if (FHoudiniEngineUtils::HapiGetAttributeDataAsStringFromInfo(
-			InGeoId, InPartId, InAttribName,
-			AttributeInfo, StringData,
-			Start, Count))
-		{
-			bool bConversionError = false;
-			OutData.SetNum(StringData.Num());
-			for (int32 Idx = 0; Idx < StringData.Num(); Idx++)
-			{
-				if (StringData[Idx].IsNumeric())
-					OutData[Idx] = FCString::Atof(*StringData[Idx]);
-				else
-					bConversionError = true;
-			}
-
-			if (!bConversionError)
-			{
-				HOUDINI_LOG_MESSAGE(TEXT("Attribute %s was expected to be a float attribute, its value had to be converted from string."), *FString(InAttribName));
-				return true;
-			}
-		}
-	}
-
-	HOUDINI_LOG_WARNING(TEXT("Found attribute %s, but it was expected to be a float attribute and is of an invalid type."), *FString(InAttribName));
-	return false;
-}
-
-bool
-FHoudiniEngineUtils::HapiGetFirstAttributeValueAsInteger(
-	const HAPI_NodeId& InGeoId,
-	const HAPI_PartId& InPartId,
-	const char* InAttribName,
-	const HAPI_AttributeOwner InAttribOwner,
-	int32& OutData)
-{
-	TArray<int> IntData;
-	HAPI_AttributeInfo AttributeInfo;
-	FHoudiniApi::AttributeInfo_Init(&AttributeInfo);
-
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsInteger(
-		InGeoId, InPartId, InAttribName,
-		AttributeInfo, IntData, 1, InAttribOwner, 0, 1) &&
-		IntData.Num() > 0)
-	{
-		OutData = IntData[0];
-		return true;
-	}
-	else
-	{
-		return false;
-	}
-}
-
-bool
-FHoudiniEngineUtils::HapiGetFirstAttributeValueAsFloat(
-	const HAPI_NodeId& InGeoId,
-	const HAPI_PartId& InPartId,
-	const char* InAttribName,
-	const HAPI_AttributeOwner InAttribOwner,
-	float& OutData)
-{
-	TArray<float> FloatData;
-	HAPI_AttributeInfo AttributeInfo;
-	FHoudiniApi::AttributeInfo_Init(&AttributeInfo);
-
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsFloat(
-		InGeoId, InPartId, InAttribName,
-		AttributeInfo, FloatData, 1, InAttribOwner, 0, 1) &&
-		FloatData.Num() > 0)
-	{
-		OutData = FloatData[0];
-		return true;
-	}
-	else
-	{
-		return false;
-	}
-}
-
-bool
-FHoudiniEngineUtils::HapiGetFirstAttributeValueAsString(
-	const HAPI_NodeId& InGeoId,
-	const HAPI_PartId& InPartId,
-	const char* InAttribName,
-	const HAPI_AttributeOwner InAttribOwner,
-	FString& OutData)
-{
-	TArray<FString> StringData;
-	HAPI_AttributeInfo AttributeInfo;
-	FHoudiniApi::AttributeInfo_Init(&AttributeInfo);
-
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		InGeoId, InPartId, InAttribName,
-		AttributeInfo, StringData, 1, InAttribOwner, 0, 1) &&
-		StringData.Num() > 0)
-	{
-		OutData = StringData[0];
-		return true;
-	}
-	else
-	{
-		return false;
-	}
-}
-
-
-bool
-FHoudiniEngineUtils::HapiGetAttributeDataAsInteger(
-	const HAPI_NodeId InGeoId,
-	const HAPI_PartId InPartId,
-	const char * InAttribName,
-	HAPI_AttributeInfo& OutAttributeInfo,
-	TArray<int32>& OutData,
-	const int32 InTupleSize,
-	const HAPI_AttributeOwner& InOwner,
-	const int32 InStartIndex,
-	const int32 InCount)
-{
-	OutAttributeInfo.exists = false;
-
-	// Reset container size.
-	OutData.SetNumUninitialized(0);
-
-	int32 OriginalTupleSize = InTupleSize;
-
-	HAPI_AttributeInfo AttributeInfo;
-	FHoudiniApi::AttributeInfo_Init(&AttributeInfo);
-	if (InOwner == HAPI_ATTROWNER_INVALID)
-	{
-		for (int32 AttrIdx = 0; AttrIdx < HAPI_ATTROWNER_MAX; ++AttrIdx)
-		{
-			HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetAttributeInfo(
-				FHoudiniEngine::Get().GetSession(),
-				InGeoId, InPartId, InAttribName,
-				(HAPI_AttributeOwner)AttrIdx, &AttributeInfo), false);
-
-			if (AttributeInfo.exists)
-				break;
-		}
-	}
-	else
-	{
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetAttributeInfo(
-			FHoudiniEngine::Get().GetSession(),
-			InGeoId, InPartId, InAttribName,
-			InOwner, &AttributeInfo), false);
-	}
-
-	if (!AttributeInfo.exists)
-		return false;
-
-	if (OriginalTupleSize > 0)
-		AttributeInfo.tupleSize = OriginalTupleSize;
-
-	// Store the retrieved attribute information.
-	OutAttributeInfo = AttributeInfo;
-
-	// Handle partial reading of attributes
-	int32 Start = 0;
-	if (InStartIndex > 0 && InStartIndex < AttributeInfo.count)
-		Start = InStartIndex;
-
-	int32 Count = AttributeInfo.count;
-	if (InCount > 0)
-	{
-		if ((Start + InCount) <= AttributeInfo.count)
-			Count = InCount;
-		else
-			Count = AttributeInfo.count - Start;
-	}
-
-	if (AttributeInfo.storage == HAPI_STORAGETYPE_INT)
-	{
-		// Allocate sufficient buffer for data.
-		OutData.SetNum(Count * AttributeInfo.tupleSize);
-
-		// Fetch the values
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetAttributeIntData(
-			FHoudiniEngine::Get().GetSession(),
-			InGeoId, InPartId, InAttribName,
-			&AttributeInfo, -1, &OutData[0], Start, Count), false);
-
-		return true;
-	}
-	else if (AttributeInfo.storage == HAPI_STORAGETYPE_INT16)
-	{
-		// Expected Int32, found an Int16, try to convert the attribute
-
-		// Allocate sufficient buffer for data.
-		TArray<int16> Int16Data;
-		Int16Data.SetNum(Count * AttributeInfo.tupleSize);
-
-		// Fetch the float values
-		if(HAPI_RESULT_SUCCESS == FHoudiniApi::GetAttributeInt16Data(
-			FHoudiniEngine::Get().GetSession(),
-			InGeoId, InPartId, InAttribName,
-			&AttributeInfo, -1, &Int16Data[0], Start, Count))
-		{
-			OutData.SetNum(Int16Data.Num());
-			for (int32 Idx = 0; Idx < Int16Data.Num(); Idx++)
-			{
-				OutData[Idx] = (int32)Int16Data[Idx];
-			}
-
-			HOUDINI_LOG_MESSAGE(TEXT("Attribute %s was expected to be an integer attribute, its value had to be converted from int16."), *FString(InAttribName));
-
-			return true;
-		}
-	}
-	else if (AttributeInfo.storage == HAPI_STORAGETYPE_INT8)
-	{
-		// Expected Int32, found an Int8, try to convert the attribute
-
-		// Allocate sufficient buffer for data.
-		TArray<int8> Int8Data;
-		Int8Data.SetNum(Count * AttributeInfo.tupleSize);
-
-		// Fetch the float values
-		if(HAPI_RESULT_SUCCESS == FHoudiniApi::GetAttributeInt8Data(
-			FHoudiniEngine::Get().GetSession(),
-			InGeoId, InPartId, InAttribName,
-			&AttributeInfo, -1, &Int8Data[0], Start, Count))
-		{
-			OutData.SetNum(Int8Data.Num());
-			for (int32 Idx = 0; Idx < Int8Data.Num(); Idx++)
-			{
-				OutData[Idx] = (int32)Int8Data[Idx];
-			}
-
-			HOUDINI_LOG_MESSAGE(TEXT("Attribute %s was expected to be an integer attribute, its value had to be converted from int8."), *FString(InAttribName));
-
-			return true;
-		}
-	}
-	else if (AttributeInfo.storage == HAPI_STORAGETYPE_FLOAT)
-	{
-		// Expected Int, found a float, try to convert the attribute
-
-		// Allocate sufficient buffer for data.
-		TArray<float> FloatData;
-		FloatData.SetNum(Count * AttributeInfo.tupleSize);
-
-		// Fetch the float values
-		if(HAPI_RESULT_SUCCESS == FHoudiniApi::GetAttributeFloatData(
-			FHoudiniEngine::Get().GetSession(),
-			InGeoId, InPartId, InAttribName,
-			&AttributeInfo, -1, &FloatData[0], Start, Count))
-		{
-			OutData.SetNum(FloatData.Num());
-			for (int32 Idx = 0; Idx < FloatData.Num(); Idx++)
-			{
-				OutData[Idx] = (int32)FloatData[Idx];
-			}
-
-			HOUDINI_LOG_MESSAGE(TEXT("Attribute %s was expected to be an integer attribute, its value had to be converted from float."), *FString(InAttribName));
-
-			return true;
-		}
-	}
-	else if (AttributeInfo.storage == HAPI_STORAGETYPE_STRING)
-	{
-		// Expected Int, found a string, try to convert the attribute
-		TArray<FString> StringData;
-		if(FHoudiniEngineUtils::HapiGetAttributeDataAsStringFromInfo(
-			InGeoId, InPartId, InAttribName,
-			AttributeInfo, StringData,
-			Start, Count))
-		{
-			bool bConversionError = false;
-			OutData.SetNum(StringData.Num());
-			for (int32 Idx = 0; Idx < StringData.Num(); Idx++)
-			{
-				if (StringData[Idx].IsNumeric())
-					OutData[Idx] = FCString::Atoi(*StringData[Idx]);
-				else
-					bConversionError = true;
-			}
-
-			if (!bConversionError)
-			{
-				HOUDINI_LOG_MESSAGE(TEXT("Attribute %s was expected to be an integer attribute, its value had to be converted from string."), *FString(InAttribName));
-				return true;
-			}
-		}
-	}
-
-	HOUDINI_LOG_WARNING(TEXT("Found attribute %s, but it was expected to be an integer attribute and is of an invalid type."), *FString(InAttribName));
-	return false;
-}
-
-
-bool
-FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-	const HAPI_NodeId& InGeoId,
-	const HAPI_PartId& InPartId,
-	const char * InAttribName,
-	HAPI_AttributeInfo& OutAttributeInfo,
-	TArray<FString>& OutData,
-	int32 InTupleSize,
-	HAPI_AttributeOwner InOwner,
-	const int32& InStartIndex,
-	const int32& InCount)
-{
-	OutAttributeInfo.exists = false;
-
-	// Reset container size.
-	OutData.SetNumUninitialized(0);
-
-	int32 OriginalTupleSize = InTupleSize;
-
-	HAPI_AttributeInfo AttributeInfo;
-	FHoudiniApi::AttributeInfo_Init(&AttributeInfo);
-	if (InOwner == HAPI_ATTROWNER_INVALID)
-	{
-		for (int32 AttrIdx = 0; AttrIdx < HAPI_ATTROWNER_MAX; ++AttrIdx)
-		{
-			HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetAttributeInfo(
-				FHoudiniEngine::Get().GetSession(),
-				InGeoId, InPartId, InAttribName,
-				(HAPI_AttributeOwner)AttrIdx, &AttributeInfo), false);
-
-			if (AttributeInfo.exists)
-				break;
-		}
-	}
-	else
-	{
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetAttributeInfo(
-			FHoudiniEngine::Get().GetSession(),
-			InGeoId, InPartId, InAttribName,
-			InOwner, &AttributeInfo), false);
-	}
-
-	if (!AttributeInfo.exists)
-		return false;
-
-	// Store the retrieved attribute information.
-	OutAttributeInfo = AttributeInfo;
-
-	if (OriginalTupleSize > 0)
-		AttributeInfo.tupleSize = OriginalTupleSize;
-
-	// Handle partial reading of attributes
-	int32 Start = 0;
-	if (InStartIndex > 0 && InStartIndex < AttributeInfo.count)
-		Start = InStartIndex;
-
-	int32 Count = AttributeInfo.count;
-	if (InCount > 0)
-	{
-		if ((Start + InCount) <= AttributeInfo.count)
-			Count = InCount;
-		else
-			Count = AttributeInfo.count - Start;
-	}
-
-	if (AttributeInfo.storage == HAPI_STORAGETYPE_STRING)
-	{
-		return FHoudiniEngineUtils::HapiGetAttributeDataAsStringFromInfo(
-			InGeoId, InPartId, InAttribName, 
-			AttributeInfo, OutData,
-			Start, Count);
-	}
-	else if (AttributeInfo.storage == HAPI_STORAGETYPE_FLOAT)
-	{
-		// Expected string, found a float, try to convert the attribute
-		
-		// Allocate sufficient buffer for data.
-		TArray<float> FloatData;
-		FloatData.SetNum(Count * AttributeInfo.tupleSize);
-
-		// Fetch the float values
-		if (HAPI_RESULT_SUCCESS == FHoudiniApi::GetAttributeFloatData(
-			FHoudiniEngine::Get().GetSession(),
-			InGeoId, InPartId, InAttribName,
-			&AttributeInfo, -1, &FloatData[0], 
-			Start, Count))
-		{
-			OutData.SetNum(FloatData.Num());
-			for (int32 Idx = 0; Idx < FloatData.Num(); Idx++)
-			{
-				OutData[Idx] = FString::SanitizeFloat(FloatData[Idx]);
-			}
-
-			HOUDINI_LOG_MESSAGE(TEXT("Attribute %s was expected to be a string attribute, its value had to be converted from float."), *FString(InAttribName));
-			return true;
-		}
-	}
-	else if (AttributeInfo.storage == HAPI_STORAGETYPE_INT)
-	{
-		// Expected String, found an int, try to convert the attribute
-		
-		// Allocate sufficient buffer for data.
-		TArray<int32> IntData;
-		IntData.SetNum(Count * AttributeInfo.tupleSize);
-
-		// Fetch the values
-		if (HAPI_RESULT_SUCCESS == FHoudiniApi::GetAttributeIntData(
-			FHoudiniEngine::Get().GetSession(),
-			InGeoId, InPartId, InAttribName,
-			&AttributeInfo, -1, &IntData[0],
-			Start, Count))
-		{
-			OutData.SetNum(IntData.Num());
-			for (int32 Idx = 0; Idx < IntData.Num(); Idx++)
-			{
-				OutData[Idx] = FString::FromInt(IntData[Idx]);
-			}
-
-			HOUDINI_LOG_MESSAGE(TEXT("Attribute %s was expected to be a string attribute, its value had to be converted from integer."), *FString(InAttribName));
-			return true;
-		}
-	}
-		
-	HOUDINI_LOG_WARNING(TEXT("Found attribute %s, but it was expected to be a string attribute and is of an invalid type."), *FString(InAttribName));
-	return false;
 }
 
 bool
@@ -5405,9 +4988,10 @@ FHoudiniEngineUtils::IsLandscapeSpline(const HAPI_NodeId& GeoId, const HAPI_Part
 	// Check for 
 	// - HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE on points/prim/detail with true/non-zero value
 	TArray<int32> OutData;
-	HAPI_AttributeInfo AttrInfo;
-	if (!HapiGetAttributeDataAsInteger(
-			GeoId, PartId, HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE, AttrInfo, OutData, 1, HAPI_ATTROWNER_INVALID, 0, 1))
+	FHoudiniHapiAccessor Accessor(GeoId, PartId, HAPI_UNREAL_ATTRIB_LANDSCAPE_SPLINE);
+	bool bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, 1,  OutData, 0, 1);
+
+	if (!bSuccess)
 	{
 		return false;
 	}
@@ -5521,100 +5105,6 @@ FHoudiniEngineUtils::HapiGetParameterDataAsFloat(
 	OutValue = Value;
 
 	return true;
-}
-
-bool FHoudiniEngineUtils::HapiGetAttributeIntOrIntArray(const HAPI_NodeId& GeoId, const HAPI_NodeId& PartId,
-	const FString& AttribName, const HAPI_AttributeOwner& AttributeOwner, HAPI_AttributeInfo& OutAttributeInfo,
-	TArray<int32>& OutData)
-{
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetAttributeInfo(
-		FHoudiniEngine::Get().GetSession(),
-		GeoId, PartId,
-		TCHAR_TO_UTF8(*AttribName), AttributeOwner, &OutAttributeInfo), false);
-
-	if (OutAttributeInfo.storage == HAPI_STORAGETYPE_INT)
-	{
-		OutData.SetNumZeroed(1);
-		
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetAttributeIntData(
-			FHoudiniEngine::Get().GetSession(),
-			GeoId, PartId,
-			TCHAR_TO_UTF8(*AttribName), &OutAttributeInfo, -1, OutData.GetData(), 0, 1), false);
-
-		return true;
-	}
-	else if (OutAttributeInfo.storage == HAPI_STORAGETYPE_INT_ARRAY)
-	{
-		TArray<int32> ArraySizes;
-		
-		OutData.SetNumZeroed(OutAttributeInfo.totalArrayElements);
-		ArraySizes.SetNumZeroed(OutAttributeInfo.totalArrayElements);
-
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetAttributeIntArrayData(
-			FHoudiniEngine::Get().GetSession(),
-			GeoId, PartId,
-			TCHAR_TO_UTF8(*AttribName),
-			&OutAttributeInfo,
-			OutData.GetData(),
-			OutAttributeInfo.totalArrayElements,
-			ArraySizes.GetData(),
-			0,
-			OutAttributeInfo.count), false);
-		
-		if (OutData.Num() > 0)
-		{
-			return true;
-		}
-	}
-	
-	return false;
-}
-
-bool FHoudiniEngineUtils::HapiGetAttributeFloatOrFloatArray(const HAPI_NodeId& GeoId, const HAPI_NodeId& PartId, const FString & AttribName,
-	const HAPI_AttributeOwner& AttributeOwner, HAPI_AttributeInfo& OutAttributeInfo, TArray<float>& OutData)
-{
-
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetAttributeInfo(
-		FHoudiniEngine::Get().GetSession(),
-		GeoId, PartId,
-		TCHAR_TO_UTF8(*AttribName), AttributeOwner, &OutAttributeInfo), false);
-
-	if (OutAttributeInfo.storage == HAPI_STORAGETYPE_FLOAT)
-	{
-		OutData.SetNumZeroed(1);
-		
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetAttributeFloatData(
-			FHoudiniEngine::Get().GetSession(),
-			GeoId, PartId,
-			TCHAR_TO_UTF8(*AttribName), &OutAttributeInfo, -1, (float*)OutData.GetData(), 0, 1), false);
-
-		return true;
-	}
-	else if (OutAttributeInfo.storage == HAPI_STORAGETYPE_FLOAT_ARRAY)
-	{
-		TArray<int32> FloatDataSizes;
-		
-		OutData.SetNumZeroed(OutAttributeInfo.totalArrayElements);
-		FloatDataSizes.SetNumZeroed(OutAttributeInfo.totalArrayElements);
-
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetAttributeFloatArrayData(
-			FHoudiniEngine::Get().GetSession(),
-			GeoId, PartId,
-			TCHAR_TO_UTF8(*AttribName),
-			&OutAttributeInfo,
-			(float*)OutData.GetData(),
-			OutAttributeInfo.totalArrayElements,
-			FloatDataSizes.GetData(),
-			0,
-			OutAttributeInfo.count), false);
-		
-		if (OutData.Num() > 0)
-		{
-			return true;
-		}
-	}
-	
-	return false;
 }
 
 HAPI_ParmId
@@ -5777,41 +5267,28 @@ FHoudiniEngineUtils::AddMeshSocketsToArray_DetailAttribute(
 {
 	int32 FoundSocketCount = 0;
 
-	// Attributes we are interested in.
-	// Position
+	// Attributes we are interested in:
 	TArray<float> Positions;
-	HAPI_AttributeInfo AttribInfoPositions;
-	FHoudiniApi::AttributeInfo_Init(&AttribInfoPositions);
 
 	// Rotation
 	bool bHasRotation = false;
 	TArray<float> Rotations;
-	HAPI_AttributeInfo AttribInfoRotations;
-	FHoudiniApi::AttributeInfo_Init(&AttribInfoRotations);
 
 	// Scale
 	bool bHasScale = false;
 	TArray<float> Scales;
-	HAPI_AttributeInfo AttribInfoScales;
-	FHoudiniApi::AttributeInfo_Init(&AttribInfoScales);
 
 	// Socket Name
 	bool bHasNames = false;
 	TArray<FString> Names;
-	HAPI_AttributeInfo AttribInfoNames;
-	FHoudiniApi::AttributeInfo_Init(&AttribInfoNames);
 
 	// Socket Actor
 	bool bHasActors = false;
 	TArray<FString> Actors;
-	HAPI_AttributeInfo AttribInfoActors;
-	FHoudiniApi::AttributeInfo_Init(&AttribInfoActors);
 
 	// Socket Tags
 	bool bHasTags = false;
 	TArray<FString> Tags;
-	HAPI_AttributeInfo AttribInfoTags;
-	FHoudiniApi::AttributeInfo_Init(&AttribInfoTags);
 
 	// Lambda function for creating the socket and adding it to the array
 	// Shared between the by Attribute / by Group methods	
@@ -5873,34 +5350,22 @@ FHoudiniEngineUtils::AddMeshSocketsToArray_DetailAttribute(
 	// Lambda function for reseting the arrays/attributes
 	auto ResetArraysAndAttr = [&]()
 	{
-		// Position
 		Positions.Empty();
-		FHoudiniApi::AttributeInfo_Init(&AttribInfoPositions);
 
-		// Rotation
 		bHasRotation = false;
 		Rotations.Empty();
-		FHoudiniApi::AttributeInfo_Init(&AttribInfoRotations);
 
-		// Scale
 		bHasScale = false;
 		Scales.Empty();
-		FHoudiniApi::AttributeInfo_Init(&AttribInfoScales);
 
-		// Socket Name
 		bHasNames = false;
 		Names.Empty();
-		FHoudiniApi::AttributeInfo_Init(&AttribInfoNames);
 
-		// Socket Actor
 		bHasActors = false;
 		Actors.Empty();
-		FHoudiniApi::AttributeInfo_Init(&AttribInfoActors);
 
-		// Socket Tags
 		bHasTags = false;
 		Tags.Empty();
-		FHoudiniApi::AttributeInfo_Init(&AttribInfoTags);
 	};
 
 	//-------------------------------------------------------------------------
@@ -5919,12 +5384,10 @@ FHoudiniEngineUtils::AddMeshSocketsToArray_DetailAttribute(
 
 		// Retrieve position data.
 		FString SocketPosAttr = SocketAttrPrefix + TEXT("_pos");
-		if (!FHoudiniEngineUtils::HapiGetAttributeDataAsFloat(
-			GeoId, PartId, TCHAR_TO_ANSI(*SocketPosAttr),
-			AttribInfoPositions, Positions, 0, HAPI_ATTROWNER_DETAIL))
-			break;
 
-		if (!AttribInfoPositions.exists)
+		FHoudiniHapiAccessor Accessor(GeoId, PartId, TCHAR_TO_ANSI(*SocketPosAttr));
+		bool bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_DETAIL, Positions);
+		if (!bSuccess)
 		{
 			// No need to keep looking for socket attributes
 			HasSocketAttributes = false;
@@ -5933,38 +5396,31 @@ FHoudiniEngineUtils::AddMeshSocketsToArray_DetailAttribute(
 
 		// Retrieve rotation data.
 		FString SocketRotAttr = SocketAttrPrefix + TEXT("_rot");
-		if (FHoudiniEngineUtils::HapiGetAttributeDataAsFloat(
-			GeoId, PartId,
-			TCHAR_TO_ANSI(*SocketRotAttr), AttribInfoRotations, Rotations, 0, HAPI_ATTROWNER_DETAIL))
+
+		Accessor.Init(GeoId, PartId, TCHAR_TO_ANSI(*SocketRotAttr));
+		if (Accessor.GetAttributeData(HAPI_ATTROWNER_DETAIL, Rotations))
 			bHasRotation = true;
 
 		// Retrieve scale data.
 		FString SocketScaleAttr = SocketAttrPrefix + TEXT("_scale");
-		if (FHoudiniEngineUtils::HapiGetAttributeDataAsFloat(
-			GeoId, PartId,
-			TCHAR_TO_ANSI(*SocketScaleAttr), AttribInfoScales, Scales, 0, HAPI_ATTROWNER_DETAIL))
+		Accessor.Init(GeoId, PartId, TCHAR_TO_ANSI(*SocketScaleAttr));
+		if (Accessor.GetAttributeData(HAPI_ATTROWNER_DETAIL, Scales))
 			bHasScale = true;
 
 		// Retrieve mesh socket names.
 		FString SocketNameAttr = SocketAttrPrefix + TEXT("_name");
-		if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-			GeoId, PartId,
-			TCHAR_TO_ANSI(*SocketNameAttr), AttribInfoNames, Names))
-			bHasNames = true;
+		Accessor.Init(GeoId, PartId, TCHAR_TO_ANSI(*SocketNameAttr));
+		bHasNames = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, 1, Names);
 
 		// Retrieve mesh socket actor.
 		FString SocketActorAttr = SocketAttrPrefix + TEXT("_actor");
-		if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-			GeoId, PartId,
-			TCHAR_TO_ANSI(*SocketActorAttr), AttribInfoActors, Actors))
-			bHasActors = true;
+		Accessor.Init(GeoId, PartId, TCHAR_TO_ANSI(*SocketActorAttr));
+		bHasActors = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, 1, Actors);
 
 		// Retrieve mesh socket tags.
 		FString SocketTagAttr = SocketAttrPrefix + TEXT("_tag");
-		if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-			GeoId, PartId,
-			TCHAR_TO_ANSI(*SocketTagAttr), AttribInfoTags, Tags))
-			bHasTags = true;
+		Accessor.Init(GeoId, PartId, TCHAR_TO_ANSI(*SocketTagAttr));
+		bHasTags = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, 1, Tags);
 
 		// Add the socket to the array
 		AddSocketToArray(0);
@@ -5984,47 +5440,19 @@ FHoudiniEngineUtils::AddMeshSocketsToArray_Group(
 	TArray<FHoudiniMeshSocket>& AllSockets,
 	const bool& isPackedPrim)
 {
-	// Attributes we are interested in.
-	// Position
 	TArray<float> Positions;
-	HAPI_AttributeInfo AttribInfoPositions;
-	FHoudiniApi::AttributeInfo_Init(&AttribInfoPositions);
-
-	// Rotation
 	bool bHasRotation = false;
 	TArray<float> Rotations;
-	HAPI_AttributeInfo AttribInfoRotations;
-	FHoudiniApi::AttributeInfo_Init(&AttribInfoRotations);
-
-	// Scale
 	bool bHasScale = false;
 	TArray<float> Scales;
-	HAPI_AttributeInfo AttribInfoScales;
-	FHoudiniApi::AttributeInfo_Init(&AttribInfoScales);
-
-	// We can also get the sockets rotation from the normal
 	bool bHasNormals = false;
 	TArray<float> Normals;
-	HAPI_AttributeInfo AttribInfoNormals;
-	FHoudiniApi::AttributeInfo_Init(&AttribInfoNormals);
-
-	// Socket Name
 	bool bHasNames = false;
 	TArray<FString> Names;
-	HAPI_AttributeInfo AttribInfoNames;
-	FHoudiniApi::AttributeInfo_Init(&AttribInfoNames);
-
-	// Socket Actor
 	bool bHasActors = false;
 	TArray<FString> Actors;
-	HAPI_AttributeInfo AttribInfoActors;
-	FHoudiniApi::AttributeInfo_Init(&AttribInfoActors);
-
-	// Socket Tags
 	bool bHasTags = false;
 	TArray<FString> Tags;
-	HAPI_AttributeInfo AttribInfoTags;
-	FHoudiniApi::AttributeInfo_Init(&AttribInfoTags);
 
 	// Lambda function for creating the socket and adding it to the array
 	// Shared between the by Attribute / by Group methods
@@ -6099,37 +5527,30 @@ FHoudiniEngineUtils::AddMeshSocketsToArray_Group(
 	{
 		// Position
 		Positions.Empty();
-		FHoudiniApi::AttributeInfo_Init(&AttribInfoPositions);
 
 		// Rotation
 		bHasRotation = false;
 		Rotations.Empty();
-		FHoudiniApi::AttributeInfo_Init(&AttribInfoRotations);
 
 		// Scale
 		bHasScale = false;
 		Scales.Empty();
-		FHoudiniApi::AttributeInfo_Init(&AttribInfoScales);
 
 		// When using socket groups, we can also get the sockets rotation from the normal
 		bHasNormals = false;
 		Normals.Empty();
-		FHoudiniApi::AttributeInfo_Init(&AttribInfoNormals);
 
 		// Socket Name
 		bHasNames = false;
 		Names.Empty();
-		FHoudiniApi::AttributeInfo_Init(&AttribInfoNames);
 
 		// Socket Actor
 		bHasActors = false;
 		Actors.Empty();
-		FHoudiniApi::AttributeInfo_Init(&AttribInfoActors);
 
 		// Socket Tags
 		bHasTags = false;
 		Tags.Empty();
-		FHoudiniApi::AttributeInfo_Init(&AttribInfoTags);
 	};
 
 	//-------------------------------------------------------------------------
@@ -6170,49 +5591,49 @@ FHoudiniEngineUtils::AddMeshSocketsToArray_Group(
 	// Reset the data arrays and attributes
 	ResetArraysAndAttr();	
 
-	// Retrieve position data.
-	if (!FHoudiniEngineUtils::HapiGetAttributeDataAsFloat(
-		GeoId, PartId, HAPI_UNREAL_ATTRIB_POSITION, AttribInfoPositions, Positions))
+	FHoudiniHapiAccessor Accessor;
+	Accessor.Init(GeoId, PartId, HAPI_UNREAL_ATTRIB_POSITION);
+	if (!Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, Positions))
 		return false;
 
-	// Retrieve rotation data.
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsFloat(
-		GeoId, PartId, HAPI_UNREAL_ATTRIB_ROTATION, AttribInfoRotations, Rotations))
+	Accessor.Init(GeoId, PartId, HAPI_UNREAL_ATTRIB_ROTATION);
+	if (Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, Rotations))
 		bHasRotation = true;
 
-	// Retrieve normal data.
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsFloat(
-		GeoId, PartId, HAPI_UNREAL_ATTRIB_NORMAL, AttribInfoNormals, Normals))
+	Accessor.Init(GeoId, PartId, HAPI_UNREAL_ATTRIB_NORMAL);
+	if (Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, Normals))
 		bHasNormals = true;
 
-	// Retrieve scale data.
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsFloat(
-		GeoId, PartId, HAPI_UNREAL_ATTRIB_SCALE, AttribInfoScales, Scales))
+	Accessor.Init(GeoId, PartId, HAPI_UNREAL_ATTRIB_SCALE);
+	if (Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, Scales))
 		bHasScale = true;
 
 	// Retrieve mesh socket names.
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		GeoId, PartId, HAPI_UNREAL_ATTRIB_MESH_SOCKET_NAME, AttribInfoNames, Names))
-		bHasNames = true;
-	else if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		GeoId, PartId, HAPI_UNREAL_ATTRIB_MESH_SOCKET_NAME_OLD, AttribInfoNames, Names))
-		bHasNames = true;
+	Accessor.Init(GeoId, PartId, HAPI_UNREAL_ATTRIB_MESH_SOCKET_NAME);
+	bHasNames = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, Names);
+	if (!bHasNames)
+	{
+		Accessor.Init(GeoId, PartId, HAPI_UNREAL_ATTRIB_MESH_SOCKET_NAME_OLD);
+		bHasNames = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, Names);
+	}
 
-	// Retrieve mesh socket actor.
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		GeoId, PartId, HAPI_UNREAL_ATTRIB_MESH_SOCKET_ACTOR, AttribInfoActors, Actors))
-		bHasActors = true;
-	else if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		GeoId, PartId, HAPI_UNREAL_ATTRIB_MESH_SOCKET_ACTOR_OLD, AttribInfoActors, Actors))
-		bHasActors = true;
+	//  Retrieve mesh actors
+	Accessor.Init(GeoId, PartId, HAPI_UNREAL_ATTRIB_MESH_SOCKET_ACTOR);
+	bHasActors = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, Actors);
+	if (!bHasActors)
+	{
+		Accessor.Init(GeoId, PartId, HAPI_UNREAL_ATTRIB_MESH_SOCKET_ACTOR_OLD);
+		bHasActors = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, Actors);
+	}
 
 	// Retrieve mesh socket tags.
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		GeoId, PartId, HAPI_UNREAL_ATTRIB_MESH_SOCKET_TAG, AttribInfoTags, Tags))
-		bHasTags = true;
-	else if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		GeoId, PartId, HAPI_UNREAL_ATTRIB_MESH_SOCKET_TAG_OLD, AttribInfoTags, Tags))
-		bHasTags = true;
+	Accessor.Init(GeoId, PartId, HAPI_UNREAL_ATTRIB_MESH_SOCKET_TAG);
+	bHasTags = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, Tags);
+	if (!bHasTags)
+	{
+		Accessor.Init(GeoId, PartId, HAPI_UNREAL_ATTRIB_MESH_SOCKET_TAG_OLD);
+		bHasTags = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, Tags);
+	}
 
 	// Extracting Sockets vertices
 	for (int32 GeoGroupNameIdx = 0; GeoGroupNameIdx < GroupNames.Num(); ++GeoGroupNameIdx)
@@ -6501,42 +5922,6 @@ FHoudiniEngineUtils::SanitizeHAPIVariableName(FString& String)
 	return bHasChanged;
 }
 
-bool
-FHoudiniEngineUtils::GetUnrealTagAttributes(
-	const HAPI_NodeId& GeoId, const HAPI_PartId& PartId, TArray<FName>& OutTags)
-{
-	FString TagAttribBase = TEXT("unreal_tag_");
-	bool bAttributeFound = true;
-	int32 TagIdx = 0;
-	while (bAttributeFound)
-	{
-		FString CurrentTagAttr = TagAttribBase + FString::FromInt(TagIdx++);
-		bAttributeFound = HapiCheckAttributeExists(GeoId, PartId, TCHAR_TO_UTF8(*CurrentTagAttr), HAPI_ATTROWNER_PRIM);
-		if (!bAttributeFound)
-			break;
-
-		// found the unreal_tag_X attribute, get its value and add it to the array
-		FString TagValue = FString();
-
-		// Create an AttributeInfo
-		HAPI_AttributeInfo AttributeInfo;
-		FHoudiniApi::AttributeInfo_Init(&AttributeInfo);
-		TArray<FString> StringData;
-		if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-			GeoId, PartId, TCHAR_TO_UTF8(*CurrentTagAttr),
-			AttributeInfo, StringData, 1, HAPI_ATTROWNER_PRIM, 0, 1))
-		{
-			if (StringData.Num() > 0)
-				TagValue = StringData[0];
-		}
-
-		FName NameTag = *TagValue;
-		OutTags.Add(NameTag);
-	}
-
-	return true;
-}
-
 
 int32
 FHoudiniEngineUtils::GetGenericAttributeList(
@@ -6792,12 +6177,18 @@ FHoudiniEngineUtils::GetGenericAttributeList(
 
 
 bool
-FHoudiniEngineUtils::GetGenericPropertiesAttributes(const HAPI_NodeId& InGeoNodeId, const HAPI_PartId& InPartId,
-	const bool InbFindDetailAttributes, const int32& InFirstValidPrimIndex, const int32& InFirstValidVertexIndex, const int32& InFirstValidPointIndex,
+FHoudiniEngineUtils::GetGenericPropertiesAttributes(
+	const HAPI_NodeId& InGeoNodeId,
+	const HAPI_PartId& InPartId,
+	const bool InbFindDetailAttributes,
+	const int32& InFirstValidPrimIndex,
+	const int32& InFirstValidVertexIndex,
+	const int32& InFirstValidPointIndex,
 	TArray<FHoudiniGenericAttribute>& OutPropertyAttributes)
 {
-	int32 FoundCount = 0;
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::GetGenericPropertiesAttributes);
 
+	int32 FoundCount = 0;
 	// List all the generic property detail attributes ...
 	if (InbFindDetailAttributes)
 	{
@@ -6837,6 +6228,7 @@ FHoudiniEngineUtils::UpdateGenericPropertiesAttributes(
 	const bool bInDeferPostEditChangePropertyCalls,
 	const FHoudiniGenericAttribute::FFindPropertyFunctionType& InProcessFunction)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::UpdateGenericPropertiesAttributes);
 	if (!IsValid(InObject))
 		return false;
 
@@ -7072,12 +6464,8 @@ FHoudiniEngineUtils::SetGenericPropertyAttribute(
 
 		case EAttribStorageType::STRING:
 		{
-			if (HAPI_RESULT_SUCCESS != FHoudiniEngineUtils::HapiSetAttributeStringData(
-				InPropertyAttribute.StringValues,
-				InGeoNodeId,
-				InPartId,
-				InPropertyAttribute.AttributeName,
-				AttributeInfo))
+			FHoudiniHapiAccessor Accessor(InGeoNodeId, InPartId, TCHAR_TO_ANSI(*InPropertyAttribute.AttributeName));
+			if (!Accessor.SetAttributeData(AttributeInfo, InPropertyAttribute.StringValues))
 			{
 				HOUDINI_LOG_WARNING(TEXT("Could not set attribute %s"), *InPropertyAttribute.AttributeName);
 			}
@@ -7269,6 +6657,7 @@ FHoudiniEngineUtils::KeepOrClearComponentTags(UActorComponent* ActorComponent, b
 void
 FHoudiniEngineUtils::KeepOrClearActorTags(AActor* Actor, bool bApplyToActor, bool bApplyToComponents, const FHoudiniGeoPartObject* InHGPO)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::KeepOrClearActorTags);
 	if (!IsValid(Actor))
 	{
 		return;
@@ -7336,7 +6725,11 @@ FHoudiniEngineUtils::AddLevelPathAttribute(
 	// We just want the path up to the first point
 	int32 DotIndex;
 	if (LevelPath.FindChar('.', DotIndex))
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
+		LevelPath.LeftInline(DotIndex, EAllowShrinking::No);
+#else
 		LevelPath.LeftInline(DotIndex, false);
+#endif
 
 	// Marshall in level path.
 	HAPI_AttributeInfo AttributeInfoLevelPath;
@@ -7355,8 +6748,8 @@ FHoudiniEngineUtils::AddLevelPathAttribute(
 	if (HAPI_RESULT_SUCCESS == Result)
 	{
 		// Set the attribute's string data
-		Result = FHoudiniEngineUtils::HapiSetAttributeStringData(
-			LevelPath, InNodeId, InPartId, HAPI_UNREAL_ATTRIB_LEVEL_PATH, AttributeInfoLevelPath);
+		FHoudiniHapiAccessor Accessor(InNodeId, InPartId, HAPI_UNREAL_ATTRIB_LEVEL_PATH);
+		HOUDINI_CHECK_RETURN(Accessor.SetAttributeUniqueData(AttributeInfoLevelPath, LevelPath), false);
 	}
 
 	if (Result != HAPI_RESULT_SUCCESS)
@@ -7365,6 +6758,8 @@ FHoudiniEngineUtils::AddLevelPathAttribute(
 		HOUDINI_LOG_WARNING(
 			TEXT("Failed to upload unreal_level_path attribute for mesh: %s"),
 			*FHoudiniEngineUtils::GetErrorDescription());
+
+		return false;
 	}
 
 	return true;
@@ -7405,8 +6800,8 @@ FHoudiniEngineUtils::AddActorPathAttribute(
 	if (HAPI_RESULT_SUCCESS == Result)
 	{
 		// Set the attribute's string data
-		Result = FHoudiniEngineUtils::HapiSetAttributeStringData(
-			ActorPath, InNodeId, InPartId, HAPI_UNREAL_ATTRIB_ACTOR_PATH, AttributeInfoActorPath);
+		FHoudiniHapiAccessor Accessor(InNodeId, InPartId, HAPI_UNREAL_ATTRIB_ACTOR_PATH);
+		HOUDINI_CHECK_RETURN(Accessor.SetAttributeUniqueData(AttributeInfoActorPath, ActorPath), false);
 	}
 
 	if (Result != HAPI_RESULT_SUCCESS)
@@ -7415,6 +6810,8 @@ FHoudiniEngineUtils::AddActorPathAttribute(
 		HOUDINI_LOG_WARNING(
 			TEXT("Failed to upload unreal_actor_path attribute for mesh: %s"),
 			*FHoudiniEngineUtils::GetErrorDescription());
+
+		return false;
 	}
 
 	return true;
@@ -7449,8 +6846,9 @@ FHoudiniEngineUtils::AddLandscapeTypeAttribute(
 	if (Result == HAPI_RESULT_SUCCESS )
 	{
 		// Set the attribute's string data
-		Result = FHoudiniEngineUtils::HapiSetAttributeIntUniqueData(
-			1, InNodeId, InPartId, HAPI_UNREAL_ATTRIB_LANDSCAPE_STREAMING_PROXY, AttributeInfoActorPath);
+
+		FHoudiniHapiAccessor Accessor(InNodeId, InPartId, HAPI_UNREAL_ATTRIB_LANDSCAPE_STREAMING_PROXY);
+		HOUDINI_CHECK_RETURN(Accessor.SetAttributeUniqueData(AttributeInfoActorPath, 1), false);
 	}
 
 	if (Result != HAPI_RESULT_SUCCESS)
@@ -7531,12 +6929,12 @@ FHoudiniEngineUtils::CreateSlateNotification(
 FString
 FHoudiniEngineUtils::GetHoudiniEnginePluginDir()
 {
-	FString EnginePluginDir = FPaths::EnginePluginsDir() / TEXT("Runtime/HoudiniEngine");
-	if (FPaths::DirectoryExists(EnginePluginDir))
+	FString EnginePluginDir = FPaths::EnginePluginsDir() / TEXT("Runtime/HoudiniEngine/");
+	if (FPaths::FileExists(EnginePluginDir + "HoudiniEngine.uplugin"))
 		return EnginePluginDir;
 
-	FString ProjectPluginDir = FPaths::ProjectPluginsDir() / TEXT("Runtime/HoudiniEngine");
-	if (FPaths::DirectoryExists(ProjectPluginDir))
+	FString ProjectPluginDir = FPaths::ProjectPluginsDir() / TEXT("Runtime/HoudiniEngine/");
+	if (FPaths::FileExists(ProjectPluginDir + "HoudiniEngine.uplugin"))
 		return ProjectPluginDir;
 
 	TSharedPtr<IPlugin> HoudiniPlugin = IPluginManager::Get().FindPlugin(TEXT("HoudiniEngine"));
@@ -7558,6 +6956,8 @@ FHoudiniEngineUtils::CreateNode(
 	const HAPI_Bool& bInCookOnCreation,
 	HAPI_NodeId* OutNewNodeId)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::CreateNode);
+
 	// Call HAPI::CreateNode
 	HAPI_Result Result = FHoudiniApi::CreateNode(
 		FHoudiniEngine::Get().GetSession(),
@@ -7599,59 +6999,16 @@ FHoudiniEngineUtils::CreateNode(
 int32
 FHoudiniEngineUtils::HapiGetCookCount(const HAPI_NodeId& InNodeId)
 {
-	int32 CookCount = -1;
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::HapiGetCookCount);
 
-	FHoudiniApi::GetTotalCookCount(
+	// To reduce the "cost" of the call on big HDAs - limit or search to non bypassed SOP/OBJ nodes
+	int32 CookCount = -1;
+	if (HAPI_RESULT_FAILURE == FHoudiniApi::GetTotalCookCount(
 		FHoudiniEngine::Get().GetSession(),
-		InNodeId, HAPI_NODETYPE_ANY, HAPI_NODEFLAGS_ANY, true, &CookCount);
-
-	/*
-	// TODO:
-	// Use HAPI_GetCookingTotalCount() when available
-	HAPI_NodeInfo NodeInfo;
-	FHoudiniApi::NodeInfo_Init(&NodeInfo);
-
-	int32 CookCount = -1;
-	HAPI_Result Result = FHoudiniApi::GetNodeInfo(FHoudiniEngine::Get().GetSession(), InNodeId, &NodeInfo);
-	
-	if (Result != HAPI_RESULT_FAILURE)
+		InNodeId, HAPI_NODETYPE_OBJ | HAPI_NODETYPE_SOP, HAPI_NODEFLAGS_NON_BYPASS, true, &CookCount))
 	{
-		if (NodeInfo.type != HAPI_NODETYPE_OBJ)
-		{
-			// For SOP assets, get the cook count straight from the Asset Node
-			CookCount = NodeInfo.totalCookCount;
-		}
-		else
-		{
-			// For OBJ nodes, get the cook count from the display geos
-			// Retrieve information about each object contained within our asset.
-			TArray< HAPI_ObjectInfo > ObjectInfos;
-			if (!FHoudiniEngineUtils::HapiGetObjectInfos(InNodeId, ObjectInfos))
-				return false;
-
-			for (auto CurrentHapiObjectInfo : ObjectInfos)
-			{
-				// Get the Display Geo's info				
-				HAPI_GeoInfo DisplayHapiGeoInfo;
-				FHoudiniApi::GeoInfo_Init(&DisplayHapiGeoInfo);
-				if (HAPI_RESULT_SUCCESS != FHoudiniApi::GetDisplayGeoInfo(
-					FHoudiniEngine::Get().GetSession(), CurrentHapiObjectInfo.nodeId, &DisplayHapiGeoInfo))
-				{
-					continue;
-				}
-
-				HAPI_NodeInfo DisplayNodeInfo;
-				FHoudiniApi::NodeInfo_Init(&DisplayNodeInfo);
-				if (HAPI_RESULT_SUCCESS != FHoudiniApi::GetNodeInfo(FHoudiniEngine::Get().GetSession(), DisplayHapiGeoInfo.nodeId, &DisplayNodeInfo))
-				{
-					continue;
-				}
-
-				CookCount += DisplayNodeInfo.totalCookCount;
-			}
-		}
+		return -1;
 	}
-	*/
 
 	return CookCount;
 }
@@ -7668,16 +7025,12 @@ FHoudiniEngineUtils::GetLevelPathAttribute(
 	// ---------------------------------------------
 	// Attribute: unreal_level_path
 	// ---------------------------------------------
-	HAPI_AttributeInfo AttributeInfo;
-	FHoudiniApi::AttributeInfo_Init(&AttributeInfo);
 
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		InGeoId, InPartId, HAPI_UNREAL_ATTRIB_LEVEL_PATH, 
-		AttributeInfo, OutLevelPaths, 1, InAttributeOwner, InStartIndex, InCount))
-	{
-		if (OutLevelPaths.Num() > 0)
-			return true;
-	}
+	FHoudiniHapiAccessor Accessor(InGeoId, InPartId, HAPI_UNREAL_ATTRIB_LEVEL_PATH);
+	bool bSuccess = Accessor.GetAttributeData(InAttributeOwner, 1, OutLevelPaths, InStartIndex, InCount);
+
+	if (bSuccess && OutLevelPaths.Num() > 0)
+		return true;
 
 	OutLevelPaths.Empty();
 	return false;
@@ -7739,28 +7092,18 @@ FHoudiniEngineUtils::GetOutputNameAttribute(
 	const int32& InStartIndex,
 	const int32& InCount)
 {
-	// ---------------------------------------------
-	// Attribute: unreal_output_name
-	// ---------------------------------------------
-	HAPI_AttributeInfo AttributeInfo;
-	FHoudiniApi::AttributeInfo_Init(&AttributeInfo);
-
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		InGeoId, InPartId, HAPI_UNREAL_ATTRIB_CUSTOM_OUTPUT_NAME_V2, 
-		AttributeInfo, OutOutputNames, 1, HAPI_ATTROWNER_INVALID, InStartIndex, InCount))
-	{
-		if (OutOutputNames.Num() > 0)
-			return true;
-	}
+	FHoudiniHapiAccessor Accessor;
+	Accessor.Init(InGeoId, InPartId, HAPI_UNREAL_ATTRIB_CUSTOM_OUTPUT_NAME_V2);
+	bool bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, 1, OutOutputNames, InStartIndex, InCount);
+	if (bSuccess && OutOutputNames.Num() > 0)
+		return true;
 
 	OutOutputNames.Empty();
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		InGeoId, InPartId, HAPI_UNREAL_ATTRIB_CUSTOM_OUTPUT_NAME_V1,
-		AttributeInfo, OutOutputNames, 1, HAPI_ATTROWNER_INVALID, InStartIndex, InCount))
-	{
-		if (OutOutputNames.Num() > 0)
-			return true;
-	}
+
+	Accessor.Init(InGeoId, InPartId, HAPI_UNREAL_ATTRIB_CUSTOM_OUTPUT_NAME_V1);
+	bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, 1, OutOutputNames, InStartIndex, InCount);
+	if (bSuccess && OutOutputNames.Num() > 0)
+		return true;
 
 	OutOutputNames.Empty();
 	return false;
@@ -7780,84 +7123,66 @@ FHoudiniEngineUtils::GetOutputNameAttribute(
 	HAPI_AttributeInfo AttributeInfo;
 	FHoudiniApi::AttributeInfo_Init(&AttributeInfo);
 
+	FHoudiniHapiAccessor Accessor;
+	Accessor.Init(InGeoId, InPartId, HAPI_UNREAL_ATTRIB_CUSTOM_OUTPUT_NAME_V2);
+	bool bSuccess;
+
 	// HAPI_UNREAL_ATTRIB_CUSTOM_OUTPUT_NAME_V2
 	if (InPointIndex >= 0)
 	{
-		if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-			InGeoId, InPartId, HAPI_UNREAL_ATTRIB_CUSTOM_OUTPUT_NAME_V2, 
-			AttributeInfo, StringData, 1, HAPI_ATTROWNER_POINT, InPointIndex, Count))
-		{
-			if (StringData.Num() > 0)
-			{
-				OutOutputName = StringData[0];
-				return true;
-			}
-		}
-	}
-
-	if (InPrimIndex >= 0)
-	{
-		if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-			InGeoId, InPartId, HAPI_UNREAL_ATTRIB_CUSTOM_OUTPUT_NAME_V2, 
-			AttributeInfo, StringData, 1, HAPI_ATTROWNER_PRIM, InPrimIndex, Count))
-		{
-			if (StringData.Num() > 0)
-			{
-				OutOutputName = StringData[0];
-				return true;
-			}
-		}
-	}
-
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		InGeoId, InPartId, HAPI_UNREAL_ATTRIB_CUSTOM_OUTPUT_NAME_V2, 
-		AttributeInfo, StringData, 1, HAPI_ATTROWNER_DETAIL, 0, Count))
-	{
-		if (StringData.Num() > 0)
+		bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_POINT, 1, StringData, InPointIndex, Count);
+		if (bSuccess && StringData.Num() > 0)
 		{
 			OutOutputName = StringData[0];
 			return true;
 		}
 	}
-	
+
+	if (InPrimIndex >= 0)
+	{
+		bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_PRIM, 1, StringData, InPrimIndex, Count);
+		if (bSuccess && StringData.Num() > 0)
+		{
+			OutOutputName = StringData[0];
+			return true;
+		}
+	}
+
+	bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_DETAIL, 1, StringData, 0, Count);
+	if (bSuccess && StringData.Num() > 0)
+	{
+		OutOutputName = StringData[0];
+		return true;
+	}
+
+	Accessor.Init(InGeoId, InPartId, HAPI_UNREAL_ATTRIB_CUSTOM_OUTPUT_NAME_V1);
+
 	// HAPI_UNREAL_ATTRIB_CUSTOM_OUTPUT_NAME_V1
 	if (InPointIndex >= 0)
 	{
-		if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-			InGeoId, InPartId, HAPI_UNREAL_ATTRIB_CUSTOM_OUTPUT_NAME_V1, 
-			AttributeInfo, StringData, 1, HAPI_ATTROWNER_POINT, InPointIndex, Count))
+		bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_POINT, 1, StringData, InPointIndex, Count);
+		if (bSuccess && StringData.Num() > 0)
 		{
-			if (StringData.Num() > 0)
-			{
-				OutOutputName = StringData[0];
-				return true;
-			}
+			OutOutputName = StringData[0];
+			return true;
 		}
 	}
 
 	if (InPrimIndex >= 0)
 	{
-		if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-			InGeoId, InPartId, HAPI_UNREAL_ATTRIB_CUSTOM_OUTPUT_NAME_V1, 
-			AttributeInfo, StringData, 1, HAPI_ATTROWNER_PRIM, InPrimIndex, Count))
-		{
-			if (StringData.Num() > 0)
-			{
-				OutOutputName = StringData[0];
-				return true;
-			}
-		}
-	}
-
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		InGeoId, InPartId, HAPI_UNREAL_ATTRIB_CUSTOM_OUTPUT_NAME_V1, 
-		AttributeInfo, StringData, 1, HAPI_ATTROWNER_DETAIL, 0, Count))
-	{
-		if (StringData.Num() > 0)
+		bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_PRIM, 1, StringData, InPrimIndex, Count);
+		if (bSuccess && StringData.Num() > 0)
 		{
 			OutOutputName = StringData[0];
 			return true;
 		}
+	}
+
+	bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_DETAIL, 1, StringData, 0, Count);
+	if (bSuccess && StringData.Num() > 0)
+	{
+		OutOutputName = StringData[0];
+		return true;
 	}
 
 	OutOutputName.Empty();
@@ -7876,16 +7201,12 @@ FHoudiniEngineUtils::GetBakeNameAttribute(
 	// ---------------------------------------------
 	// Attribute: unreal_bake_name
 	// ---------------------------------------------
-	HAPI_AttributeInfo AttributeInfo;
-	FHoudiniApi::AttributeInfo_Init(&AttributeInfo);
 
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		InGeoId, InPartId, HAPI_UNREAL_ATTRIB_BAKE_NAME, 
-		AttributeInfo, OutBakeNames, 1, InAttribOwner, InStartIndex, InCount))
-	{
-		if (OutBakeNames.Num() > 0)
-			return true;
-	}
+	FHoudiniHapiAccessor Accessor(InGeoId, InPartId, HAPI_UNREAL_ATTRIB_BAKE_NAME);
+	bool bSuccess = Accessor.GetAttributeData(InAttribOwner, 1, OutBakeNames, InStartIndex, InCount);
+
+	if (bSuccess && OutBakeNames.Num() > 0)
+		return true;
 
 	OutBakeNames.Empty();
 	return false;
@@ -7951,12 +7272,11 @@ FHoudiniEngineUtils::GetTileAttribute(
 	// ---------------------------------------------
 	// Attribute: tile
 	// ---------------------------------------------
-	HAPI_AttributeInfo AttribInfoTile;
-	FHoudiniApi::AttributeInfo_Init(&AttribInfoTile);
 
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsInteger(
-		InGeoId, InPartId, HAPI_UNREAL_ATTRIB_LANDSCAPE_TILE,
-		AttribInfoTile,	OutTileValues, 0, InAttribOwner, InStart, InCount))
+
+	FHoudiniHapiAccessor Accessor(InGeoId, InPartId, HAPI_UNREAL_ATTRIB_LANDSCAPE_TILE);
+	bool bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, OutTileValues, InStart, InCount);
+	if (bSuccess)
 	{
 		if (OutTileValues.Num() > 0)
 			return true;
@@ -8027,19 +7347,14 @@ FHoudiniEngineUtils::GetEditLayerName(
 	FHoudiniApi::AttributeInfo_Init(&AttribInfo);
 
 	TArray<FString> StrData;
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		InGeoId, InPartId,
-		HAPI_UNREAL_ATTRIB_LANDSCAPE_EDITLAYER_NAME,
-		AttribInfo,
-		StrData,
-		0,
-		InAttribOwner))
+
+	FHoudiniHapiAccessor Accessor(InGeoId, InPartId, HAPI_UNREAL_ATTRIB_LANDSCAPE_EDITLAYER_NAME);
+	bool bSuccess = Accessor.GetAttributeData(InAttribOwner, 1, StrData);
+
+	if (bSuccess && StrData.Num() > 0)
 	{
-		if (StrData.Num() > 0)
-		{
-			EditLayerName = StrData[0];
-			return true;
-		}
+		EditLayerName = StrData[0];
+		return true;
 	}
 
 	EditLayerName = FString();
@@ -8070,16 +7385,11 @@ FHoudiniEngineUtils::GetTempFolderAttribute(
 {
 	OutTempFolder.Empty();
 
-	HAPI_AttributeInfo TempFolderAttribInfo;
-	FHoudiniApi::AttributeInfo_Init(&TempFolderAttribInfo);
-	if (HapiGetAttributeDataAsString(
-		InNodeId, InPartId, HAPI_UNREAL_ATTRIB_TEMP_FOLDER,
-		TempFolderAttribInfo, OutTempFolder, 1, InAttributeOwner,
-		InStart, InCount))
-	{
-		if (OutTempFolder.Num() > 0)
-			return true;
-	}
+	FHoudiniHapiAccessor Accessor(InNodeId, InPartId, HAPI_UNREAL_ATTRIB_TEMP_FOLDER);
+	bool bSuccess = Accessor.GetAttributeData(InAttributeOwner, 1, OutTempFolder, InStart, InCount);
+
+	if (bSuccess && OutTempFolder.Num() > 0)
+		return true;
 
 	OutTempFolder.Empty();
 	return false;
@@ -8118,7 +7428,7 @@ FHoudiniEngineUtils::GetTempFolderAttribute(
 
 bool
 FHoudiniEngineUtils::GetBakeFolderAttribute(
-	const HAPI_NodeId& InGeoId,
+	const HAPI_NodeId& InNodeId,
 	const HAPI_AttributeOwner& InAttributeOwner,
 	TArray<FString>& OutBakeFolder,
 	const HAPI_PartId& InPartId,
@@ -8126,17 +7436,12 @@ FHoudiniEngineUtils::GetBakeFolderAttribute(
 	const int32& InCount)
 {
 	OutBakeFolder.Empty();
-	
-	HAPI_AttributeInfo BakeFolderAttribInfo;
-	FHoudiniApi::AttributeInfo_Init(&BakeFolderAttribInfo);
-	if (HapiGetAttributeDataAsString(
-		InGeoId, InPartId, HAPI_UNREAL_ATTRIB_BAKE_FOLDER,
-		BakeFolderAttribInfo, OutBakeFolder, 1, InAttributeOwner,
-		InStart, InCount))
-	{
-		if (OutBakeFolder.Num() > 0)
-			return true;
-	}
+
+	FHoudiniHapiAccessor Accessor(InNodeId, InPartId, HAPI_UNREAL_ATTRIB_BAKE_FOLDER);
+	bool bSuccess = Accessor.GetAttributeData(InAttributeOwner, 1, OutBakeFolder, InStart, InCount);
+
+	if (bSuccess && OutBakeFolder.Num() > 0)
+		return true;
 
 	OutBakeFolder.Empty();
 	return false;
@@ -8213,7 +7518,7 @@ FHoudiniEngineUtils::GetBakeFolderAttribute(
 
 bool
 FHoudiniEngineUtils::GetBakeActorAttribute(
-	const HAPI_NodeId& InGeoId,
+	const HAPI_NodeId& InNodeId,
 	const HAPI_PartId& InPartId,
 	TArray<FString>& OutBakeActorNames,
 	const HAPI_AttributeOwner& InAttributeOwner,
@@ -8223,16 +7528,12 @@ FHoudiniEngineUtils::GetBakeActorAttribute(
 	// ---------------------------------------------
 	// Attribute: unreal_bake_actor
 	// ---------------------------------------------
-	HAPI_AttributeInfo AttributeInfo;
-	FHoudiniApi::AttributeInfo_Init(&AttributeInfo);
 
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		InGeoId, InPartId, HAPI_UNREAL_ATTRIB_BAKE_ACTOR,
-		AttributeInfo, OutBakeActorNames, 1, InAttributeOwner, InStart, InCount))
-	{
-		if (OutBakeActorNames.Num() > 0)
-			return true;
-	}
+	FHoudiniHapiAccessor Accessor(InNodeId, InPartId, HAPI_UNREAL_ATTRIB_BAKE_ACTOR);
+	bool bSuccess = Accessor.GetAttributeData(InAttributeOwner, 1, OutBakeActorNames, InStart, InCount);
+
+	if (bSuccess && OutBakeActorNames.Num() > 0)
+		return true;
 
 	OutBakeActorNames.Empty();
 	return false;
@@ -8298,16 +7599,12 @@ FHoudiniEngineUtils::GetBakeActorClassAttribute(
 	// ---------------------------------------------
 	// Attribute: unreal_bake_actor
 	// ---------------------------------------------
-	HAPI_AttributeInfo AttributeInfo;
-	FHoudiniApi::AttributeInfo_Init(&AttributeInfo);
 
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		InGeoId, InPartId, HAPI_UNREAL_ATTRIB_BAKE_ACTOR_CLASS,
-		AttributeInfo, OutBakeActorClassNames, 1, InAttributeOwner, InStart, InCount))
-	{
-		if (OutBakeActorClassNames.Num() > 0)
-			return true;
-	}
+	FHoudiniHapiAccessor Accessor(InGeoId, InPartId, HAPI_UNREAL_ATTRIB_BAKE_ACTOR_CLASS);
+	bool bSuccess = Accessor.GetAttributeData(InAttributeOwner, 1, OutBakeActorClassNames, InStart, InCount);
+
+	if (bSuccess && OutBakeActorClassNames.Num() > 0)
+		return true;
 
 	OutBakeActorClassNames.Empty();
 	return false;
@@ -8373,16 +7670,11 @@ FHoudiniEngineUtils::GetBakeOutlinerFolderAttribute(
 	// ---------------------------------------------
 	// Attribute: unreal_bake_outliner_folder
 	// ---------------------------------------------
-	HAPI_AttributeInfo AttributeInfo;
-	FHoudiniApi::AttributeInfo_Init(&AttributeInfo);
 
-	if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		InGeoId, InPartId, HAPI_UNREAL_ATTRIB_BAKE_OUTLINER_FOLDER, 
-		AttributeInfo, OutBakeOutlinerFolders, 1, InAttributeOwner, InStart, InCount))
-	{
-		if (OutBakeOutlinerFolders.Num() > 0)
-			return true;
-	}
+	FHoudiniHapiAccessor Accessor(InGeoId, InPartId, HAPI_UNREAL_ATTRIB_BAKE_OUTLINER_FOLDER);
+	bool bSuccess = Accessor.GetAttributeData(InAttributeOwner, 1, OutBakeOutlinerFolders, InStart, InCount);
+	if (bSuccess && OutBakeOutlinerFolders.Num() > 0)
+		return true;
 
 	OutBakeOutlinerFolders.Empty();
 	return false;
@@ -8457,9 +7749,18 @@ FHoudiniEngineUtils::MoveActorToLevel(AActor* InActor, ULevel* InDesiredLevel)
 	return true;
 }
 
+HAPI_Result
+FHoudiniEngineUtils::HapiCommitGeo(const HAPI_NodeId& InNodeId)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::HapiCommitGeo);
+	return FHoudiniApi::CommitGeo(FHoudiniEngine::Get().GetSession(), InNodeId);
+}
+
 bool
 FHoudiniEngineUtils::HapiCookNode(const HAPI_NodeId& InNodeId, HAPI_CookOptions* InCookOptions, const bool& bWaitForCompletion)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::HapiCookNode);
+
 	// Check for an invalid node id
 	if (InNodeId < 0)
 		return false;
@@ -8514,12 +7815,14 @@ FHoudiniEngineUtils::HapiCookNode(const HAPI_NodeId& InNodeId, HAPI_CookOptions*
 HAPI_Result
 FHoudiniEngineUtils::CreateInputNode(const FString& InNodeLabel, HAPI_NodeId& OutNodeId, const int32 InParentNodeId)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::CreateInputNode);
+
 	HAPI_NodeId NodeId = -1;
 	HAPI_Session const* const Session = FHoudiniEngine::Get().GetSession();
 
 	if (InParentNodeId < 0)
 	{
-		const HAPI_Result Result = FHoudiniApi::CreateInputNode(Session, &NodeId, TCHAR_TO_ANSI(*InNodeLabel));
+		const HAPI_Result Result = FHoudiniApi::CreateInputNode(Session, -1, &NodeId, TCHAR_TO_UTF8(*InNodeLabel));
 		if (Result != HAPI_RESULT_SUCCESS)
 		{
 			HOUDINI_LOG_WARNING(TEXT("[FHoudiniEngineUtils::CreateInputNode]: CreateInputNode failed: %s"), *FHoudiniEngineUtils::GetErrorDescription());
@@ -8581,6 +7884,151 @@ FHoudiniEngineUtils::HapiConnectNodeInput(const int32& InNodeId, const int32& In
 }
 
 
+FString
+FHoudiniEngineUtils::JSONToString(const TSharedPtr<FJsonObject>& JSONObject)
+{
+	FString OutputString;
+	const TSharedRef< TJsonWriter<> > Writer = TJsonWriterFactory<>::Create(&OutputString);
+	FJsonSerializer::Serialize(JSONObject.ToSharedRef(), Writer);
+	return OutputString;
+}
+
+
+bool
+FHoudiniEngineUtils::JSONFromString(const FString& JSONString, TSharedPtr<FJsonObject>& OutJSONObject)
+{
+	TSharedRef< TJsonReader<> > Reader = TJsonReaderFactory<>::Create( JSONString );
+	if (!FJsonSerializer::Deserialize(Reader, OutJSONObject) || !OutJSONObject.IsValid())
+	{
+		return false;
+	}
+
+	return true;
+}
+
+
+bool
+FHoudiniEngineUtils::UpdateMeshPartUVSets(
+	const int GeoId,
+	const int PartId,
+	const bool& bRemoveUnused,
+	TArray<TArray<float>>& OutPartUVSets,
+	TArray<HAPI_AttributeInfo>& OutAttribInfoUVSets)
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniEngineUtils::UpdateMeshPartUVSets);
+
+	// Only Retrieve uvs if necessary
+	if (OutPartUVSets.Num() > 0)
+		return true;
+
+	OutPartUVSets.SetNum(MAX_STATIC_TEXCOORDS);
+	OutAttribInfoUVSets.SetNum(MAX_STATIC_TEXCOORDS);
+
+	// The second UV set should be called uv2, but we will still check if need to look for a uv1 set.
+	// If uv1 exists, we'll look for uv, uv1, uv2 etc.. if not we'll look for uv, uv2, uv3 etc..
+	bool bUV1Exists = FHoudiniEngineUtils::HapiCheckAttributeExists(GeoId, PartId, "uv1");
+
+	// Retrieve UVs.
+	for (int32 TexCoordIdx = 0; TexCoordIdx < MAX_STATIC_TEXCOORDS; ++TexCoordIdx)
+	{
+		FString UVAttributeName = HAPI_UNREAL_ATTRIB_UV;
+		if (TexCoordIdx > 0)
+			UVAttributeName += FString::Printf(TEXT("%d"), bUV1Exists ? TexCoordIdx : TexCoordIdx + 1);
+
+		FHoudiniApi::AttributeInfo_Init(&OutAttribInfoUVSets[TexCoordIdx]);
+
+		FHoudiniHapiAccessor Accessor(GeoId, PartId, TCHAR_TO_ANSI(*UVAttributeName));
+		Accessor.GetInfo(OutAttribInfoUVSets[TexCoordIdx], HAPI_ATTROWNER_INVALID);
+		OutAttribInfoUVSets[TexCoordIdx].tupleSize = 2;
+		Accessor.GetAttributeData(OutAttribInfoUVSets[TexCoordIdx], OutPartUVSets[TexCoordIdx]);
+	}
+
+	// Also look for 16.5 uvs (attributes with a Texture type) 
+	// For that, we'll have to iterate through ALL the attributes and check their types
+	TArray<FString> FoundAttributeNames;
+	TArray<HAPI_AttributeInfo> FoundAttributeInfos;
+	for (int32 AttrIdx = 0; AttrIdx < HAPI_ATTROWNER_MAX; ++AttrIdx)
+	{
+		FHoudiniEngineUtils::HapiGetAttributeOfType(
+			GeoId, PartId, (HAPI_AttributeOwner)AttrIdx, 
+			HAPI_ATTRIBUTE_TYPE_TEXTURE, FoundAttributeInfos, FoundAttributeNames);
+	}
+
+	if (FoundAttributeInfos.Num() <= 0)
+		return true;
+
+	// We found some additionnal uv attributes
+	int32 AvailableIdx = 0;
+	for (int32 attrIdx = 0; attrIdx < FoundAttributeInfos.Num(); attrIdx++)
+	{
+		// Ignore the old uvs
+		if (FoundAttributeNames[attrIdx] == TEXT("uv")
+			|| FoundAttributeNames[attrIdx] == TEXT("uv1")
+			|| FoundAttributeNames[attrIdx] == TEXT("uv2")
+			|| FoundAttributeNames[attrIdx] == TEXT("uv3")
+			|| FoundAttributeNames[attrIdx] == TEXT("uv4")
+			|| FoundAttributeNames[attrIdx] == TEXT("uv5")
+			|| FoundAttributeNames[attrIdx] == TEXT("uv6")
+			|| FoundAttributeNames[attrIdx] == TEXT("uv7")
+			|| FoundAttributeNames[attrIdx] == TEXT("uv8"))
+			continue;
+
+		HAPI_AttributeInfo CurrentAttrInfo = FoundAttributeInfos[attrIdx];
+		if (!CurrentAttrInfo.exists)
+			continue;
+
+		// Look for the next available index in the return arrays
+		for (; AvailableIdx < OutAttribInfoUVSets.Num(); AvailableIdx++)
+		{
+			if (!OutAttribInfoUVSets[AvailableIdx].exists)
+				break;
+		}
+
+		// We are limited to MAX_STATIC_TEXCOORDS uv sets!
+		// If we already have too many uv sets, skip the rest
+		if ((AvailableIdx >= MAX_STATIC_TEXCOORDS) || (AvailableIdx >= OutAttribInfoUVSets.Num()))
+		{
+			HOUDINI_LOG_WARNING(TEXT("Too many UV sets found. Unreal only supports %d , skipping the remaining uv sets."), (int32)MAX_STATIC_TEXCOORDS);
+			break;
+		}
+
+		// Force the tuple size to 2 ?
+		CurrentAttrInfo.tupleSize = 2;
+
+		// Add the attribute infos we found
+		OutAttribInfoUVSets[AvailableIdx] = CurrentAttrInfo;
+
+		// Allocate sufficient buffer for the attribute's data.
+		OutPartUVSets[AvailableIdx].SetNumUninitialized(CurrentAttrInfo.count * CurrentAttrInfo.tupleSize);
+
+		// Get the texture coordinates
+		if (HAPI_RESULT_SUCCESS != FHoudiniApi::GetAttributeFloatData(
+			FHoudiniEngine::Get().GetSession(),
+			GeoId, PartId, TCHAR_TO_UTF8(*(FoundAttributeNames[attrIdx])),
+			&OutAttribInfoUVSets[AvailableIdx], -1,
+			&OutPartUVSets[AvailableIdx][0], 0, CurrentAttrInfo.count))
+		{
+			// Something went wrong when trying to access the uv values, invalidate this set
+			OutAttribInfoUVSets[AvailableIdx].exists = false;
+		}
+	}
+
+	// Remove unused UV sets
+	if (bRemoveUnused)
+	{
+		for (int32 Idx = OutPartUVSets.Num() - 1; Idx >= 0; Idx--)
+		{
+			if (OutPartUVSets[Idx].Num() > 0)
+				continue;
+
+			OutPartUVSets.RemoveAt(Idx);
+		}
+	}
+
+	return true;
+}
+
+
 void
 FHoudiniEngineUtils::ForceDeleteObject(UObject* Object)
 {
@@ -8606,5 +8054,368 @@ FHoudiniEngineUtils::ForceDeleteObject(UObject* Object)
 	if (bDeleteSucceeded)
 		CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS, true);
 }
+
+TArray<FString> FHoudiniEngineUtils::GetAttributeNames(const HAPI_Session* Session, HAPI_NodeId NodeId, HAPI_PartId PartId, HAPI_AttributeOwner Owner)
+{
+	HAPI_PartInfo PartInfo;
+	TArray<FString> Results;
+
+	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetPartInfo(Session, NodeId, PartId, &PartInfo), Results);
+
+	TArray<HAPI_StringHandle> StringHandles;
+	StringHandles.SetNum(PartInfo.attributeCounts[Owner]);
+
+	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetAttributeNames(Session, NodeId, PartId, Owner, StringHandles.GetData(), StringHandles.Num()), Results);
+
+	FHoudiniEngineString::SHArrayToFStringArray(StringHandles, Results, Session);
+
+	return Results;
+}
+
+TMap< HAPI_AttributeOwner, TArray<FString>> FHoudiniEngineUtils::GetAllAttributeNames(const HAPI_Session* Session, HAPI_NodeId NodeId, HAPI_PartId PartId)
+{
+	TMap< HAPI_AttributeOwner, TArray<FString>> Results;
+
+	Results.Add(HAPI_AttributeOwner::HAPI_ATTROWNER_VERTEX, GetAttributeNames(Session, NodeId, PartId, HAPI_AttributeOwner::HAPI_ATTROWNER_VERTEX));
+	Results.Add(HAPI_AttributeOwner::HAPI_ATTROWNER_POINT, GetAttributeNames(Session, NodeId, PartId, HAPI_AttributeOwner::HAPI_ATTROWNER_POINT));
+	Results.Add(HAPI_AttributeOwner::HAPI_ATTROWNER_PRIM, GetAttributeNames(Session, NodeId, PartId, HAPI_AttributeOwner::HAPI_ATTROWNER_PRIM));
+	Results.Add(HAPI_AttributeOwner::HAPI_ATTROWNER_DETAIL, GetAttributeNames(Session, NodeId, PartId, HAPI_AttributeOwner::HAPI_ATTROWNER_DETAIL));
+
+	return Results;
+}
+
+void FHoudiniEngineUtils::DumpNode(const FString& NodePath)
+{
+	HAPI_NodeId UnrealContentNodeId = -1;
+	HAPI_Result result = FHoudiniApi::GetNodeFromPath(
+		FHoudiniEngine::Get().GetSession(), -1, TCHAR_TO_ANSI(*NodePath), &UnrealContentNodeId);
+	if (result != HAPI_RESULT_SUCCESS)
+	{
+		HOUDINI_LOG_DISPLAY(TEXT("Failed to get node from path: %s"), *NodePath);
+		return;
+	}
+	FString Output = DumpNode(UnrealContentNodeId);
+	HOUDINI_LOG_DISPLAY(TEXT("%s"), *Output);
+}
+
+#define H_CASE_ENUM_TO_STRING(X) case X: return TEXT(#X);
+
+FString FHoudiniEngineUtils::NodeTypeToString(HAPI_NodeType NodeType)
+{
+	switch (NodeType)
+	{
+		H_CASE_ENUM_TO_STRING(HAPI_NODETYPE_ANY)
+		H_CASE_ENUM_TO_STRING(HAPI_NODETYPE_NONE)
+		H_CASE_ENUM_TO_STRING(HAPI_NODETYPE_OBJ)
+		H_CASE_ENUM_TO_STRING(HAPI_NODETYPE_SOP)
+		H_CASE_ENUM_TO_STRING(HAPI_NODETYPE_CHOP)
+		H_CASE_ENUM_TO_STRING(HAPI_NODETYPE_ROP)
+		H_CASE_ENUM_TO_STRING(HAPI_NODETYPE_SHOP)
+		H_CASE_ENUM_TO_STRING(HAPI_NODETYPE_COP)
+		H_CASE_ENUM_TO_STRING(HAPI_NODETYPE_VOP)
+		H_CASE_ENUM_TO_STRING(HAPI_NODETYPE_DOP)
+		H_CASE_ENUM_TO_STRING(HAPI_NODETYPE_TOP)
+	default:
+		return TEXT("Unknown");
+	}
+}
+
+FString FHoudiniEngineUtils::PartTypeToString(HAPI_PartType PartType)
+{
+	switch (PartType)
+	{
+		H_CASE_ENUM_TO_STRING(HAPI_PARTTYPE_INVALID);
+		H_CASE_ENUM_TO_STRING(HAPI_PARTTYPE_MESH);
+		H_CASE_ENUM_TO_STRING(HAPI_PARTTYPE_CURVE)
+		H_CASE_ENUM_TO_STRING(HAPI_PARTTYPE_VOLUME);
+		H_CASE_ENUM_TO_STRING(HAPI_PARTTYPE_INSTANCER);
+		H_CASE_ENUM_TO_STRING(HAPI_PARTTYPE_BOX);
+		H_CASE_ENUM_TO_STRING(HAPI_PARTTYPE_SPHERE);
+		H_CASE_ENUM_TO_STRING(HAPI_PARTTYPE_MAX);
+	default:
+		return TEXT("Unknown");
+	}
+}
+
+FString FHoudiniEngineUtils::AttributeTypeToString(HAPI_AttributeTypeInfo AttributeType)
+{
+	switch (AttributeType)
+	{
+		H_CASE_ENUM_TO_STRING(HAPI_ATTRIBUTE_TYPE_INVALID);
+		H_CASE_ENUM_TO_STRING(HAPI_ATTRIBUTE_TYPE_NONE);
+		H_CASE_ENUM_TO_STRING(HAPI_ATTRIBUTE_TYPE_POINT);
+		H_CASE_ENUM_TO_STRING(HAPI_ATTRIBUTE_TYPE_HPOINT);
+		H_CASE_ENUM_TO_STRING(HAPI_ATTRIBUTE_TYPE_VECTOR);
+		H_CASE_ENUM_TO_STRING(HAPI_ATTRIBUTE_TYPE_NORMAL);
+		H_CASE_ENUM_TO_STRING(HAPI_ATTRIBUTE_TYPE_COLOR);
+		H_CASE_ENUM_TO_STRING(HAPI_ATTRIBUTE_TYPE_QUATERNION);
+		H_CASE_ENUM_TO_STRING(HAPI_ATTRIBUTE_TYPE_MATRIX3);
+		H_CASE_ENUM_TO_STRING(HAPI_ATTRIBUTE_TYPE_MATRIX);
+		H_CASE_ENUM_TO_STRING(HAPI_ATTRIBUTE_TYPE_ST);
+		H_CASE_ENUM_TO_STRING(HAPI_ATTRIBUTE_TYPE_HIDDEN);
+		H_CASE_ENUM_TO_STRING(HAPI_ATTRIBUTE_TYPE_BOX2);
+		H_CASE_ENUM_TO_STRING(HAPI_ATTRIBUTE_TYPE_BOX);
+	default:
+		return TEXT("Unknown");
+	}
+}
+
+FString FHoudiniEngineUtils::StorageTypeToString(HAPI_StorageType StorageType)
+{
+	switch (StorageType)
+	{
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_INVALID);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_INT);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_INT64);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_FLOAT);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_FLOAT64);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_STRING);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_UINT8);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_INT8);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_INT16);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_DICTIONARY);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_INT_ARRAY);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_INT64_ARRAY);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_FLOAT_ARRAY);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_FLOAT64_ARRAY);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_STRING_ARRAY);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_UINT8_ARRAY);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_INT8_ARRAY);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_INT16_ARRAY);
+		H_CASE_ENUM_TO_STRING(HAPI_STORAGETYPE_DICTIONARY_ARRAY);
+	default: return TEXT("Unknown");
+	}
+}
+
+FString FHoudiniEngineUtils::CurveTypeToString(HAPI_CurveType CurveType)
+{
+	switch (CurveType)
+	{
+		H_CASE_ENUM_TO_STRING(HAPI_CURVETYPE_INVALID)
+		H_CASE_ENUM_TO_STRING(HAPI_CURVETYPE_LINEAR)
+		H_CASE_ENUM_TO_STRING(HAPI_CURVETYPE_NURBS)
+		H_CASE_ENUM_TO_STRING(HAPI_CURVETYPE_BEZIER)
+		H_CASE_ENUM_TO_STRING(HAPI_CURVETYPE_MAX)
+	default:
+		return TEXT("Unknown");
+	}
+}
+
+FString FHoudiniEngineUtils::RSTOrderToString(HAPI_RSTOrder RstOrder)
+{
+	switch (RstOrder)
+	{
+		H_CASE_ENUM_TO_STRING(HAPI_TRS)
+		H_CASE_ENUM_TO_STRING(HAPI_TSR)
+		H_CASE_ENUM_TO_STRING(HAPI_RST)
+		H_CASE_ENUM_TO_STRING(HAPI_RTS)
+		H_CASE_ENUM_TO_STRING(HAPI_STR)
+		H_CASE_ENUM_TO_STRING(HAPI_SRT)
+	default:
+		return TEXT("Unknown");
+	}
+}
+
+#undef H_CASE_ENUM_TO_STRING
+
+FString FHoudiniEngineUtils::HapiTransformToString(HAPI_Transform Transform)
+{
+	FStringBuilderBase Output;
+	Output.Appendf(TEXT("P: %f, %f, %f "), Transform.position[0], Transform.position[1], Transform.position[2]);
+	Output.Appendf(TEXT("Q: %f, %f, %f, %f "), Transform.rotationQuaternion[0], Transform.rotationQuaternion[1],
+	               Transform.rotationQuaternion[2], Transform.rotationQuaternion[3]);
+	Output.Appendf(TEXT("S: %f, %f, %f "), Transform.scale[0], Transform.scale[1], Transform.scale[2]);
+	Output.Appendf(TEXT("SH: %f, %f, %f "), Transform.shear[0], Transform.shear[1], Transform.shear[2]);
+	Output.Appendf(TEXT("RST Order: %s\n"), *RSTOrderToString(Transform.rstOrder));
+	return Output.ToString();
+}
+
+FString FHoudiniEngineUtils::DumpNode(HAPI_NodeId NodeId)
+{
+	if (NodeId == INDEX_NONE)
+		return TEXT("Invalid Node ID\n");
+
+	HAPI_NodeInfo NodeInfo;
+	FHoudiniApi::NodeInfo_Init(&NodeInfo);
+
+	HAPI_Result Result = FHoudiniApi::GetNodeInfo(FHoudiniEngine::Get().GetSession(), NodeId, &NodeInfo);
+	if(Result != HAPI_RESULT_SUCCESS)
+		return FString::Printf(TEXT("Failed to get node info: %s\n"), *FHoudiniEngineUtils::GetErrorDescription());
+
+	FStringBuilderBase Output;
+
+
+	Output.Appendf(TEXT("Node ID: %d\n"), NodeId);
+	Output.Appendf(TEXT("    Name: %s\n"), *FHoudiniEngineString(NodeInfo.nameSH).ToFString());
+	Output.Appendf(TEXT("    Type: %s\n"), *NodeTypeToString(NodeInfo.type));
+
+	// Get GeoInfo for this node
+	HAPI_GeoInfo GeoInfo;
+	FHoudiniApi::GeoInfo_Init(&GeoInfo);
+	Result = FHoudiniApi::GetGeoInfo(FHoudiniEngine::Get().GetSession(), NodeId, &GeoInfo);
+	if(Result != HAPI_RESULT_SUCCESS)
+	{
+		Output.Appendf(TEXT("    No GeoInfo, reason: %s\n"), *FHoudiniEngineUtils::GetErrorDescription());
+		return Output.ToString();
+	}
+
+	Output.Append(TEXT("    Part Count: %d\n"), GeoInfo.partCount);
+
+	for (int PartIndex = 0; PartIndex < GeoInfo.partCount; PartIndex++)
+	{
+		DumpPart(NodeId, PartIndex, Output);
+	}
+	return Output.ToString();
+}
+
+FString FHoudiniEngineUtils::DumpAttribute(HAPI_NodeId NodeId, HAPI_PartId PartId, HAPI_AttributeOwner Owner,
+                                           const FString& Name)
+{
+	HAPI_AttributeInfo AttributeInfo;
+	FHoudiniApi::AttributeInfo_Init(&AttributeInfo);
+	HAPI_Result Result = FHoudiniApi::GetAttributeInfo(FHoudiniEngine::Get().GetSession(), NodeId, PartId,
+		TCHAR_TO_ANSI(*Name), Owner, &AttributeInfo);
+	if(Result != HAPI_RESULT_SUCCESS)
+	{
+		return FString::Printf(TEXT("Failed to get attribute info: %s\n"), *FHoudiniEngineUtils::GetErrorDescription());
+	}
+
+	FStringBuilderBase Output;
+	Output.Appendf(TEXT("            Storage: %s\n"), *StorageTypeToString(AttributeInfo.storage));
+	Output.Appendf(TEXT("            Type: %s\n"), *AttributeTypeToString(AttributeInfo.typeInfo));
+	Output.Appendf(TEXT("            Tuple Size: %d\n"), AttributeInfo.tupleSize);
+	Output.Appendf(TEXT("            Count: %d\n"), AttributeInfo.count);
+	Output.Appendf(TEXT("            Total Array Elements: %d\n"), AttributeInfo.totalArrayElements);
+	return Output.ToString();
+}
+
+
+void FHoudiniEngineUtils::DumpPart(HAPI_NodeId NodeId, HAPI_PartId PartId, FStringBuilderBase& Output)
+{
+	HAPI_PartInfo PartInfo;
+	FHoudiniApi::PartInfo_Init(&PartInfo);
+	HAPI_Result Result = FHoudiniApi::GetPartInfo(FHoudiniEngine::Get().GetSession(), NodeId, PartId, &PartInfo);
+	if(Result != HAPI_RESULT_SUCCESS)
+	{
+		Output.Appendf(TEXT("    Failed to get part info: %s\n"), *FHoudiniEngineUtils::GetErrorDescription());
+		return;
+	}
+
+	Output.Appendf(TEXT("Part %d\n"), PartId);
+	Output.Appendf(TEXT("    Part Name: %s\n"), *FHoudiniEngineString(PartInfo.nameSH).ToFString());
+	Output.Appendf(TEXT("    Part Type: %s\n"), *PartTypeToString(PartInfo.type));
+	Output.Appendf(TEXT("    Part Face Count: %d\n"), PartInfo.faceCount);
+	Output.Appendf(TEXT("    Part Vertex Count: %d\n"), PartInfo.vertexCount);
+	Output.Appendf(TEXT("    Part Point Count: %d\n"), PartInfo.pointCount);
+	Output.Appendf(TEXT("    Part Vertex Attribute Count: %d\n"), PartInfo.attributeCounts[HAPI_ATTROWNER_VERTEX]);
+	Output.Appendf(TEXT("    Part Point Attribute Count: %d\n"), PartInfo.attributeCounts[HAPI_ATTROWNER_POINT]);
+	Output.Appendf(TEXT("    Part Primitive Attribute Count: %d\n"), PartInfo.attributeCounts[HAPI_ATTROWNER_PRIM]);
+	Output.Appendf(TEXT("    Part Detail Attribute Count: %d\n"), PartInfo.attributeCounts[HAPI_ATTROWNER_DETAIL]);
+	Output.Appendf(TEXT("    Part Is Instanced: %d\n"), PartInfo.isInstanced ? 1 : 0);
+	Output.Appendf(TEXT("    Instance Count: %d\n"), PartInfo.instanceCount);
+	Output.Appendf(TEXT("    Instance Part Count: %d\n"), PartInfo.instancedPartCount ? 1 : 0);
+
+	switch (PartInfo.type)
+	{
+	case HAPI_PARTTYPE_CURVE:
+		HAPI_CurveInfo CurveInfo;
+		FHoudiniApi::CurveInfo_Init(&CurveInfo);
+		Result = FHoudiniApi::GetCurveInfo(FHoudiniEngine::Get().GetSession(), NodeId, PartId, &CurveInfo);
+		if(Result != HAPI_RESULT_SUCCESS)
+		{
+			Output.Appendf(TEXT("    Failed to get curve info: %s\n"), *FHoudiniEngineUtils::GetErrorDescription());
+			return;
+		}
+		Output.Appendf(TEXT("    Curve:\n"));
+		Output.Appendf(TEXT("        Curve Type: %s\n"), *CurveTypeToString(CurveInfo.curveType));
+		Output.Appendf(TEXT("        Curve Count: %d\n"), CurveInfo.curveCount);
+		Output.Appendf(TEXT("        Vertex Count: %d\n"), CurveInfo.vertexCount);
+		Output.Appendf(TEXT("        Knot Count: %d\n"), CurveInfo.knotCount);
+		Output.Appendf(TEXT("        Periodic: %d\n"), CurveInfo.isPeriodic ? 1 : 0);
+		Output.Appendf(TEXT("        Rational: %d\n"), CurveInfo.isRational ? 1 : 0);
+		Output.Appendf(TEXT("        Order: %d\n"), CurveInfo.order);
+		Output.Appendf(TEXT("        Has Knots: %d\n"), CurveInfo.hasKnots);
+		Output.Appendf(TEXT("        Is Closed: %d\n"), CurveInfo.isClosed ? 1 : 0);
+		break;
+	case HAPI_PARTTYPE_VOLUME:
+		HAPI_VolumeInfo VolumeInfo;
+		FHoudiniApi::VolumeInfo_Init(&VolumeInfo);
+		Result = FHoudiniApi::GetVolumeInfo(FHoudiniEngine::Get().GetSession(), NodeId, PartId, &VolumeInfo);
+		if(Result != HAPI_RESULT_SUCCESS)
+		{
+			Output.Appendf(TEXT("    Failed to get volume info: %s\n"), *FHoudiniEngineUtils::GetErrorDescription());
+			return;
+		}
+		Output.Appendf(TEXT("    Volume:\n"));
+		Output.Appendf(TEXT("        X Length: %d\n"), VolumeInfo.xLength);
+		Output.Appendf(TEXT("        Y Length: %d\n"), VolumeInfo.yLength);
+		Output.Appendf(TEXT("        Z Length: %d\n"), VolumeInfo.zLength);
+		Output.Appendf(TEXT("        Tuple Size: %d\n"), VolumeInfo.tupleSize);
+		Output.Appendf(TEXT("        Storage: %s\n"), *StorageTypeToString(VolumeInfo.storage));
+		Output.Appendf(TEXT("        Tile Size: %d\n"), VolumeInfo.tileSize);
+		Output.Appendf(TEXT("        Has Taper: %d\n"), VolumeInfo.hasTaper);
+		Output.Appendf(TEXT("        X Taper: %f\n"), VolumeInfo.xTaper);
+		Output.Appendf(TEXT("        Y Taper: %f\n"), VolumeInfo.yTaper);
+		break;
+
+	case HAPI_PARTTYPE_INSTANCER:
+		{
+			TArray<HAPI_NodeId> InstancedPartIds;
+			InstancedPartIds.SetNum(PartInfo.instancedPartCount);
+
+			Result = FHoudiniApi::GetInstancedPartIds(FHoudiniEngine::Get().GetSession(),
+				NodeId, PartId, InstancedPartIds.GetData(), 0, PartInfo.instancedPartCount);
+			if(Result != HAPI_RESULT_SUCCESS)
+			{
+				Output.Appendf(TEXT("    Failed to get instanced part ids: %s\n"), *FHoudiniEngineUtils::GetErrorDescription());
+				return;
+			}
+
+			Output.Append(TEXT("    Instance Ids: "));
+			for (int Index = 0; Index < InstancedPartIds.Num(); Index++)
+			{
+				Output.Appendf(TEXT("%d "), InstancedPartIds[Index]);
+			}
+			Output.Appendf(TEXT("\n"));
+		}
+		break;
+	default:
+		break;
+	}
+
+	TArray<FString> AttrNames = FHoudiniEngineUtils::GetAttributeNames(FHoudiniEngine::Get().GetSession(), 
+		NodeId, PartId, HAPI_AttributeOwner::HAPI_ATTROWNER_VERTEX);
+
+	for (int32 AttrIdx = 0; AttrIdx < AttrNames.Num(); ++AttrIdx)
+	{
+		Output.Appendf(TEXT("        Vertex Attribute: %s\n"), *AttrNames[AttrIdx]);
+		Output.Append(DumpAttribute(NodeId, PartId, HAPI_AttributeOwner::HAPI_ATTROWNER_VERTEX, AttrNames[AttrIdx]));
+	}
+
+	AttrNames = FHoudiniEngineUtils::GetAttributeNames(FHoudiniEngine::Get().GetSession(), NodeId, PartId,
+	                                                   HAPI_AttributeOwner::HAPI_ATTROWNER_POINT);
+	for (int32 AttrIdx = 0; AttrIdx < AttrNames.Num(); ++AttrIdx)
+	{
+		Output.Appendf(TEXT("        Point Attribute: %s\n"), *AttrNames[AttrIdx]);
+		Output.Append(DumpAttribute(NodeId, PartId, HAPI_AttributeOwner::HAPI_ATTROWNER_POINT, AttrNames[AttrIdx]));
+	}
+
+	AttrNames = FHoudiniEngineUtils::GetAttributeNames(FHoudiniEngine::Get().GetSession(), NodeId, PartId,
+	                                                   HAPI_AttributeOwner::HAPI_ATTROWNER_PRIM);
+	for (int32 AttrIdx = 0; AttrIdx < AttrNames.Num(); ++AttrIdx)
+	{
+		Output.Appendf(TEXT("        Prims Attribute: %s\n"), *AttrNames[AttrIdx]);
+		Output.Append(DumpAttribute(NodeId, PartId, HAPI_AttributeOwner::HAPI_ATTROWNER_PRIM, AttrNames[AttrIdx]));
+	}
+
+	AttrNames = FHoudiniEngineUtils::GetAttributeNames(FHoudiniEngine::Get().GetSession(), NodeId, PartId,
+	                                                   HAPI_AttributeOwner::HAPI_ATTROWNER_DETAIL);
+	for (int32 AttrIdx = 0; AttrIdx < AttrNames.Num(); ++AttrIdx)
+	{
+		Output.Appendf(TEXT("        Detail Attribute: %s\n"), *AttrNames[AttrIdx]);
+		Output.Append(DumpAttribute(NodeId, PartId, HAPI_AttributeOwner::HAPI_ATTROWNER_DETAIL, AttrNames[AttrIdx]));
+	}
+}
+
 
 #undef LOCTEXT_NAMESPACE

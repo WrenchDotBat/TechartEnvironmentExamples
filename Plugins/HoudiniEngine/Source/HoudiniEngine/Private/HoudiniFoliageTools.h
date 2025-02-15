@@ -68,7 +68,7 @@ public:
 	static TArray<UFoliageType*> GetFoliageTypes(const ULevel* DesiredLevel, const UStaticMesh* InstancedStaticMesh);
 
 	// Spawn the Foliage Instances into the given World/Foliage Type.
-	static void SpawnFoliageInstances(UWorld* InWorld, UFoliageType* Settings, const TArray<FFoliageInstance>& InstancesToPlace, const TArray<FFoliageAttachmentInfo> & AttachementInfos);
+	static TArray<AInstancedFoliageActor*> SpawnFoliageInstances(UWorld* InWorld, UFoliageType* Settings, const TArray<FFoliageInstance>& InstancesToPlace, const TArray<FFoliageAttachmentInfo> & AttachementInfos);
 
 	// Returns Foliage Instances used in the given World by the Foliage Type.
 	static TArray<FFoliageInstance> GetAllFoliageInstances(UWorld* InWorld, UFoliageType* Settings);
@@ -79,8 +79,6 @@ public:
 	// Return all FFoliageInfo which reference the FoliageType in the given world.
 	static TArray<FFoliageInfo*> GetAllFoliageInfo(UWorld * World, UFoliageType * FoliageType);
 
-	// Removed Foliage Type from world
-	static void RemoveFoliageTypeFromWorld(UWorld * World, UFoliageType * FoliageType);
 
 	// Remove all instances using this Foliage Type from the world
 	static void RemoveInstancesFromWorld(UWorld* World, UFoliageType* FoliageType);
@@ -94,5 +92,26 @@ public:
 	// Get all attachment info for a part.
 	static TArray<FFoliageAttachmentInfo> GetAttachmentInfo(int GeoId, int PartId, int Count);
 
+	// Return true if the two foliage types are of the same class and all property values are the same.
+	static bool AreFoliageTypesEqual(UFoliageType const* InLhs, UFoliageType const* InRhs);
+
+	template<typename ElementType>
+	static bool IsIntervalEqual(const TInterval<ElementType>& InLhs, const TInterval<ElementType>& InRhs); 
+
+	template<typename ElementType>
+	static bool IsIntervalNearlyEqual(const TInterval<ElementType>& InLhs, const TInterval<ElementType>& InRhs); 
 };
 
+template<typename ElementType>
+bool FHoudiniFoliageTools::IsIntervalEqual(const TInterval<ElementType>& InLhs, const TInterval<ElementType>& InRhs)
+{
+	return InLhs.Min == InRhs.Min && InLhs.Max == InRhs.Max;
+}
+
+
+template<typename ElementType>
+bool FHoudiniFoliageTools::IsIntervalNearlyEqual(const TInterval<ElementType>& InLhs, const TInterval<ElementType>& InRhs)
+{
+	return FMath::IsNearlyEqual(InLhs.Min, InRhs.Min)
+		&& FMath::IsNearlyEqual(InLhs.Max, InRhs.Max);
+}

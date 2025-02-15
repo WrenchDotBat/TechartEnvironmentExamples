@@ -36,6 +36,10 @@ UHoudiniPublicAPIInput::UHoudiniPublicAPIInput()
 {
 	bKeepWorldTransform = false;
 	bImportAsReference = false;
+	bImportAsReferenceRotScaleEnabled = true;
+	bImportAsReferenceBboxEnabled = true;
+	bImportAsReferenceMaterialEnabled = true;
+	bExportMaterialParameters = false;
 }
 
 bool
@@ -99,8 +103,12 @@ UHoudiniPublicAPIInput::PopulateFromHoudiniInput(UHoudiniInput const* const InIn
 
 	bKeepWorldTransform = InInput->GetKeepWorldTransform();
 	bImportAsReference = InInput->GetImportAsReference();
+	bImportAsReferenceRotScaleEnabled = InInput->GetImportAsReferenceRotScaleEnabled();
+	bImportAsReferenceBboxEnabled = InInput->GetImportAsReferenceBboxEnabled();
+	bImportAsReferenceMaterialEnabled = InInput->GetImportAsReferenceMaterialEnabled();
+	bExportMaterialParameters = InInput->GetExportMaterialParameters();
 
-	const TArray<UHoudiniInputObject*>* SrcInputObjectsPtr = InInput->GetHoudiniInputObjectArray(InputType);
+	const TArray<TObjectPtr<UHoudiniInputObject>>* SrcInputObjectsPtr = InInput->GetHoudiniInputObjectArray(InputType);
 	if (SrcInputObjectsPtr && SrcInputObjectsPtr->Num() > 0)
 	{
 		InputObjects.Empty(SrcInputObjectsPtr->Num()); 
@@ -172,6 +180,26 @@ UHoudiniPublicAPIInput::UpdateHoudiniInput(UHoudiniInput* const InInput) const
 		InInput->SetImportAsReference(bImportAsReference);
 		bAnyChanges = true;
 	}
+	if (InInput->GetImportAsReferenceRotScaleEnabled() != bImportAsReferenceRotScaleEnabled)
+	{
+		InInput->SetImportAsReferenceRotScaleEnabled(bImportAsReferenceRotScaleEnabled);
+		bAnyChanges = true;
+	}
+	if (InInput->GetImportAsReferenceBboxEnabled() != bImportAsReferenceBboxEnabled)
+	{
+		InInput->SetImportAsReferenceBboxEnabled(bImportAsReferenceBboxEnabled);
+		bAnyChanges = true;
+	}
+	if (InInput->GetImportAsReferenceMaterialEnabled() != bImportAsReferenceMaterialEnabled)
+	{
+		InInput->SetImportAsReferenceMaterialEnabled(bImportAsReferenceMaterialEnabled);
+		bAnyChanges = true;
+	}
+	if (InInput->GetExportMaterialParameters() != bExportMaterialParameters)
+	{
+		InInput->SetExportMaterialParameters(bExportMaterialParameters);
+		bAnyChanges = true;
+	}
 
 	// Copy / set the input objects on the Houdini Input
 	InInput->SetInputObjectsNumber(InputType, NumInputObjects);
@@ -214,32 +242,12 @@ UHoudiniPublicAPIInput::UpdateHoudiniInput(UHoudiniInput* const InInput) const
 }
 
 bool
-UHoudiniPublicAPIInput::CopyHoudiniInputObjectProperties(UHoudiniInputObject const* const InInputObject, UObject* const InObject)
-{
-	const int32 Index = InputObjects.Find(InObject);
-	if (!InputObjects.IsValidIndex(Index))
-		return false;
-
-	return CopyHoudiniInputObjectPropertiesToInputObject(InInputObject, Index);
-}
-
-bool
 UHoudiniPublicAPIInput::CopyHoudiniInputObjectPropertiesToInputObject(UHoudiniInputObject const* const InHoudiniInputObject, const int32 InInputObjectIndex)
 {
 	if (!IsValid(InHoudiniInputObject) || !InputObjects.IsValidIndex(InInputObjectIndex))
 		return false;
 
 	return true;
-}
-
-bool
-UHoudiniPublicAPIInput::CopyPropertiesToHoudiniInputObject(UObject* const InObject, UHoudiniInputObject* const InInputObject) const
-{
-	const int32 Index = InputObjects.Find(InObject);
-	if (!InputObjects.IsValidIndex(Index))
-		return false;
-
-	return CopyInputObjectPropertiesToHoudiniInputObject(Index, InInputObject);
 }
 
 bool
@@ -283,11 +291,14 @@ UHoudiniPublicAPIInput::ConvertAPIInputObjectAndAssignToInput(UObject* InAPIInpu
 
 UHoudiniPublicAPIGeoInput::UHoudiniPublicAPIGeoInput()
 {
+	const UHoudiniRuntimeSettings* HoudiniRuntimeSettings = GetDefault<UHoudiniRuntimeSettings>();
+
 	bKeepWorldTransform = false;
 	bPackBeforeMerge = false;
 	bExportLODs = false;
 	bExportSockets = false;
 	bExportColliders = false;
+	bPreferNaniteFallbackMesh = HoudiniRuntimeSettings ? HoudiniRuntimeSettings->bPreferNaniteFallbackMesh : false;
 }
 
 bool
@@ -374,53 +385,6 @@ void
 UHoudiniPublicAPIGeoInput::PostLoad()
 {
 	Super::PostLoad();
-
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#else
-#pragma warning(push)
-#pragma warning(disable : 4996)	// disable deprecation warning locally
-#endif
-
-	// Copy deprecated properties to the new ones and clear the deprecated properties.
-	if (HasAnyFlags(RF_WasLoaded))
-	{
-		if (InputObjectTransformOffsets_DEPRECATED.Num() > 0)
-		{
-			const int32 NumObjects = InputObjects.Num();
-			InputObjectTransformOffsetArray.SetNum(NumObjects);
-			for (int32 Index = 0; Index < NumObjects; ++Index)
-			{
-				UObject const* const InputObject = InputObjects[Index];
-				if (!IsValid(InputObject))
-				{
-					InputObjectTransformOffsetArray[Index] = FTransform::Identity;
-					continue;
-				}
-
-				FTransform const* const Transform = InputObjectTransformOffsets_DEPRECATED.Find(InputObject);
-				if (!Transform)
-				{
-					InputObjectTransformOffsetArray[Index] = FTransform::Identity;
-					continue;
-				}
-				
-				InputObjectTransformOffsetArray[Index] = *Transform;
-			}
-
-			InputObjectTransformOffsets_DEPRECATED.Empty();
-
-			MarkPackageDirty();
-		}
-	}
-
-#ifdef __clang__
-#pragma clang diagnostic pop
-#else
-#pragma warning(pop)
-#endif
-
 }
 
 bool
@@ -467,61 +431,6 @@ UHoudiniPublicAPIGeoInput::CopyInputObjectPropertiesToHoudiniInputObject(const i
 	return true;
 }
 
-bool
-UHoudiniPublicAPIGeoInput::SetObjectTransformOffset_Implementation(UObject* InObject, const FTransform& InTransform)
-{
-	if (!SupportsTransformOffset())
-	{
-		SetErrorMessage(FString::Printf(
-			TEXT("%s inputs do not support transform offsets."), *UEnum::GetValueAsString(GetInputType())));
-		return false;
-	}
-	
-	// Ensure that InObject is valid and has already been added as input object
-	if (!IsValid(InObject))
-	{
-		SetErrorMessage(TEXT("InObject is invalid."));
-		return false;
-	}
-
-	const int32 Index = InputObjects.Find(InObject);
-	if (Index == INDEX_NONE)
-	{
-		SetErrorMessage(FString::Printf(
-			TEXT("InObject '%s' is not currently set as input object on this input."), *(InObject->GetName())));
-		return false;
-	}
-
-	return SetInputObjectTransformOffset(Index, InTransform);
-}
-
-bool
-UHoudiniPublicAPIGeoInput::GetObjectTransformOffset_Implementation(UObject* InObject, FTransform& OutTransform) const
-{
-	if (!SupportsTransformOffset())
-	{
-		SetErrorMessage(FString::Printf(
-			TEXT("%s inputs do not support transform offsets."), *UEnum::GetValueAsString(GetInputType())));
-		return false;
-	}
-
-	// Ensure that InObject is valid and has already been added as input object
-	if (!IsValid(InObject))
-	{
-		SetErrorMessage(TEXT("InObject is invalid."));
-		return false;
-	}
-
-	const int32 Index = InputObjects.Find(InObject);
-	if (Index == INDEX_NONE)
-	{
-		SetErrorMessage(FString::Printf(
-			TEXT("InObject '%s' is not currently set as input object on this input."), *(InObject->GetName())));
-		return false;
-	}
-
-	return GetInputObjectTransformOffset(Index, OutTransform);
-}
 
 bool
 UHoudiniPublicAPIGeoInput::SetInputObjectTransformOffset_Implementation(
@@ -854,6 +763,7 @@ UHoudiniPublicAPICurveInput::UpdateHoudiniInput(UHoudiniInput* const InInput) co
 		InInput->SetCookOnCurveChange(bCookOnCurveChanged);
 		bAnyChanges = true;
 	}
+
 	if (InInput->IsAddRotAndScaleAttributesEnabled() != bAddRotAndScaleAttributesOnCurves)
 	{
 		InInput->SetAddRotAndScaleAttributes(bAddRotAndScaleAttributesOnCurves);
@@ -965,7 +875,7 @@ UHoudiniPublicAPICurveInput::ConvertAPIInputObjectAndAssignToInput(UObject* InAP
 				}
 			}
 			
-			TArray<UHoudiniInputObject*>* HoudiniInputObjectArray = InHoudiniInput->GetHoudiniInputObjectArray(InHoudiniInput->GetInputType());
+			TArray<TObjectPtr<UHoudiniInputObject>>* HoudiniInputObjectArray = InHoudiniInput->GetHoudiniInputObjectArray(InHoudiniInput->GetInputType());
 			if (HoudiniInputObjectArray && HoudiniInputObjectArray->IsValidIndex(InInputIndex))
 			{
 				(*HoudiniInputObjectArray)[InInputIndex] = IsValid(NewHoudiniInputObject) ? NewHoudiniInputObject : nullptr;
@@ -981,89 +891,20 @@ UHoudiniPublicAPICurveInput::ConvertAPIInputObjectAndAssignToInput(UObject* InAP
 	return Object;
 }
 
-
-UHoudiniPublicAPIAssetInput::UHoudiniPublicAPIAssetInput()
-{
-	bKeepWorldTransform = true;
-}
-
-bool
-UHoudiniPublicAPIAssetInput::IsAcceptableObjectForInput_Implementation(UObject* InObject) const
-{
-	if (IsValid(InObject) && InObject->IsA<UHoudiniPublicAPIAssetWrapper>())
-	{
-		UHoudiniPublicAPIAssetWrapper* const Wrapper = Cast<UHoudiniPublicAPIAssetWrapper>(InObject);
-		AHoudiniAssetActor* const AssetActor = Cast<AHoudiniAssetActor>(Wrapper->GetHoudiniAssetActor());
-		if (IsValid(AssetActor) && IsValid(AssetActor->HoudiniAssetComponent))
-			return true;
-	}
-
-	return Super::IsAcceptableObjectForInput_Implementation(InObject);
-}
-
-bool
-UHoudiniPublicAPIAssetInput::PopulateFromHoudiniInput(UHoudiniInput const* const InInput)
-{
-	if (!Super::PopulateFromHoudiniInput(InInput))
-		return false;
-
-	return true;
-}
-
-bool
-UHoudiniPublicAPIAssetInput::UpdateHoudiniInput(UHoudiniInput* const InInput) const
-{
-	if (!Super::UpdateHoudiniInput(InInput))
-		return false;
-
-	return true;
-}
-
-UObject*
-UHoudiniPublicAPIAssetInput::ConvertInternalInputObject(UObject* InInternalInputObject)
-{
-	// If InInternalInputObject is a Houdini Asset Component or Houdini Asset Actor, wrap it with the API and return
-	// wrapper.
-	if (IsValid(InInternalInputObject))
-	{
-		if ((InInternalInputObject->IsA<AHoudiniAssetActor>() || InInternalInputObject->IsA<UHoudiniAssetComponent>()) &&
-				UHoudiniPublicAPIAssetWrapper::CanWrapHoudiniObject(InInternalInputObject))
-		{
-			return UHoudiniPublicAPIAssetWrapper::CreateWrapper(this, InInternalInputObject);
-		}
-	}
-
-	return Super::ConvertInternalInputObject(InInternalInputObject);
-}
-
-UObject*
-UHoudiniPublicAPIAssetInput::ConvertAPIInputObjectAndAssignToInput(UObject* InAPIInputObject, UHoudiniInput* InHoudiniInput, const int32 InInputIndex) const
-{
-	// If InAPIInputObject is an asset wrapper, extract the underlying HoudiniAssetComponent.
-	if (IsValid(InAPIInputObject) && InAPIInputObject->IsA<UHoudiniPublicAPIAssetWrapper>())
-	{
-		UHoudiniPublicAPIAssetWrapper* const Wrapper = Cast<UHoudiniPublicAPIAssetWrapper>(InAPIInputObject);
-		if (Wrapper)
-		{
-			UHoudiniAssetComponent* const HAC = Wrapper->GetHoudiniAssetComponent();
-			if (IsValid(HAC))
-			{
-				return Super::ConvertAPIInputObjectAndAssignToInput(HAC, InHoudiniInput, InInputIndex);
-			}
-		}
-	}
-
-	return Super::ConvertAPIInputObjectAndAssignToInput(InAPIInputObject, InHoudiniInput, InInputIndex);
-}
-
-
 UHoudiniPublicAPIWorldInput::UHoudiniPublicAPIWorldInput()
 {
+	const UHoudiniRuntimeSettings* HoudiniRuntimeSettings = GetDefault<UHoudiniRuntimeSettings>();
+
 	bKeepWorldTransform = true;
 	bIsWorldInputBoundSelector = false;
 	bWorldInputBoundSelectorAutoUpdate = false;
-	UnrealSplineResolution = 50.0f;
+	UnrealSplineResolution = HoudiniRuntimeSettings ? HoudiniRuntimeSettings->MarshallingSplineResolution : 50.0f;
+	bPreferNaniteFallbackMesh = HoudiniRuntimeSettings ? HoudiniRuntimeSettings->bPreferNaniteFallbackMesh : false;
 	bExportLevelInstanceContent = true;
+	bDirectlyConnectHdas = true;
+	bExportHeightDataPerEditLayer = true;
+	bExportMergedPaintLayers = true;
+	bExportPaintLayersPerEditLayer = false;
 }
 
 bool
@@ -1085,15 +926,20 @@ UHoudiniPublicAPIWorldInput::PopulateFromHoudiniInput(UHoudiniInput const* const
 	if (!Super::PopulateFromHoudiniInput(InInput))
 		return false;
 
-	TArray<AActor*> const* const BoundSelectorObjectArray = InInput->GetBoundSelectorObjectArray();
+	TArray<TObjectPtr<AActor>> const* const BoundSelectorObjectArray = InInput->GetBoundSelectorObjectArray();
 	if (BoundSelectorObjectArray)
 		WorldInputBoundSelectorObjects = *BoundSelectorObjectArray;
 	else
 		WorldInputBoundSelectorObjects.Empty();
+
 	bIsWorldInputBoundSelector = InInput->IsWorldInputBoundSelector();
 	bWorldInputBoundSelectorAutoUpdate = InInput->GetWorldInputBoundSelectorAutoUpdates();
 	UnrealSplineResolution = InInput->GetUnrealSplineResolution();
 	bExportLevelInstanceContent = InInput->IsExportLevelInstanceContentEnabled();
+	bDirectlyConnectHdas = InInput->GetDirectlyConnectHdas();
+	bExportHeightDataPerEditLayer = InInput->IsEditLayerHeightExportEnabled();
+	bExportPaintLayersPerEditLayer= InInput->IsPaintLayerPerEditLayerExportEnabled();
+	bExportMergedPaintLayers = InInput->IsMergedPaintLayerExportEnabled();
 
 	return true;
 }
@@ -1103,454 +949,84 @@ UHoudiniPublicAPIWorldInput::UpdateHoudiniInput(UHoudiniInput* const InInput) co
 {
 	if (!Super::UpdateHoudiniInput(InInput))
 		return false;
-	
-	InInput->SetBoundSelectorObjectsNumber(WorldInputBoundSelectorObjects.Num());
-	TArray<AActor*>* const BoundSelectorObjectArray = InInput->GetBoundSelectorObjectArray();
+
+	bool bAnyChanges = false;
+	TArray<TObjectPtr<AActor>>* const BoundSelectorObjectArray = InInput->GetBoundSelectorObjectArray();
 	if (BoundSelectorObjectArray)
-		*BoundSelectorObjectArray = WorldInputBoundSelectorObjects;
-	InInput->SetWorldInputBoundSelector(bIsWorldInputBoundSelector);
-	InInput->SetWorldInputBoundSelectorAutoUpdates(bWorldInputBoundSelectorAutoUpdate);
-	InInput->SetUnrealSplineResolution(UnrealSplineResolution);
-	InInput->SetExportLevelInstanceContent(bExportLevelInstanceContent);
-	InInput->MarkChanged(true);
-
-	return true;
-}
-
-
-UHoudiniPublicAPILandscapeInput::UHoudiniPublicAPILandscapeInput()
-	: LandscapeExportType(EHoudiniLandscapeExportType::Heightfield)
-	, bLandscapeExportSelectionOnly(false)
-	, bLandscapeAutoSelectComponent(false)
-	, bLandscapeExportMaterials(false)
-	, bLandscapeExportLighting(false)
-	, bLandscapeExportNormalizedUVs(false)
-	, bLandscapeExportTileUVs(false)
-{
-	
-}
-
-bool
-UHoudiniPublicAPILandscapeInput::PopulateFromHoudiniInput(UHoudiniInput const* const InInput)
-{
-	if (!Super::PopulateFromHoudiniInput(InInput))
-		return false;
-
-	const FHoudiniInputObjectSettings& InputSettings = InInput->GetInputSettings();
-	
-	LandscapeExportType = InputSettings.LandscapeExportType;
-	bLandscapeExportSelectionOnly = InputSettings.bLandscapeExportSelectionOnly;
-	bLandscapeAutoSelectComponent = InputSettings.bLandscapeAutoSelectComponent;
-	bLandscapeExportMaterials = InputSettings.bLandscapeExportMaterials;
-	bLandscapeExportLighting = InputSettings.bLandscapeExportLighting;
-	bLandscapeExportNormalizedUVs = InputSettings.bLandscapeExportNormalizedUVs;
-	bLandscapeExportTileUVs = InputSettings.bLandscapeExportTileUVs;
-
-	return true;
-}
-
-bool
-UHoudiniPublicAPILandscapeInput::UpdateHoudiniInput(UHoudiniInput* const InInput) const
-{
-	if (!Super::UpdateHoudiniInput(InInput))
-		return false;
-
-	bool bAnyChanges = false;
-	if (InInput->GetLandscapeExportType() != LandscapeExportType)
 	{
-		InInput->SetLandscapeExportType(LandscapeExportType);
-		InInput->SetHasLandscapeExportTypeChanged(true);
-
-		// Mark each input object as changed as well
-		TArray<UHoudiniInputObject*>* LandscapeInputObjectsArray = InInput->GetHoudiniInputObjectArray(GetInputType());
-		if (LandscapeInputObjectsArray)
+		if (BoundSelectorObjectArray->Num() != WorldInputBoundSelectorObjects.Num())
 		{
-			for (UHoudiniInputObject *NextInputObj : *LandscapeInputObjectsArray)
-			{
-				if (!NextInputObj)
-					continue;
-				NextInputObj->MarkChanged(true);
-			}
+			InInput->SetBoundSelectorObjectsNumber(WorldInputBoundSelectorObjects.Num());
+			bAnyChanges = true;
 		}
 
+		bool bNeedToUpdateBoundObjects = false;
+		for (int Idx = 0; Idx < WorldInputBoundSelectorObjects.Num(); Idx++)
+		{
+			if ((*BoundSelectorObjectArray)[Idx] != WorldInputBoundSelectorObjects[Idx])
+				bNeedToUpdateBoundObjects = true;
+		}
+
+		if (bNeedToUpdateBoundObjects)
+		{
+			*BoundSelectorObjectArray = WorldInputBoundSelectorObjects;
+			bAnyChanges = true;
+		}
+	}
+
+	if (InInput->IsWorldInputBoundSelector() != bIsWorldInputBoundSelector)
+	{
+		InInput->SetWorldInputBoundSelector(bIsWorldInputBoundSelector);
 		bAnyChanges = true;
 	}
 
-	if (InInput->IsLandscapeExportSelectionOnlyEnabled() != bLandscapeExportSelectionOnly)
+	if (InInput->GetWorldInputBoundSelectorAutoUpdates() != bWorldInputBoundSelectorAutoUpdate)
 	{
-		InInput->SetLandscapeExportSelectionOnlyEnabled(bLandscapeExportSelectionOnly);
+		InInput->SetWorldInputBoundSelectorAutoUpdates(bWorldInputBoundSelectorAutoUpdate);
+		bAnyChanges = true;
+	}
+
+	if (InInput->GetUnrealSplineResolution() != UnrealSplineResolution)
+	{
+		InInput->SetUnrealSplineResolution(UnrealSplineResolution);
+		bAnyChanges = true;
+	}
+
+	if (InInput->IsExportLevelInstanceContentEnabled() != bExportLevelInstanceContent)
+	{
+		InInput->SetExportLevelInstanceContent(bExportLevelInstanceContent);
 		bAnyChanges = true;
 	}
 	
-	if (InInput->IsLandscapeAutoSelectComponentEnabled() != bLandscapeAutoSelectComponent)
+	if (InInput->GetDirectlyConnectHdas() != bDirectlyConnectHdas)
 	{
-		InInput->SetLandscapeAutoSelectComponentEnabled(bLandscapeAutoSelectComponent);
+		InInput->SetDirectlyConnectHdas(bDirectlyConnectHdas);
 		bAnyChanges = true;
 	}
-	
-	if (InInput->IsLandscapeExportMaterialsEnabled() != bLandscapeExportMaterials)
+
+	if (InInput->IsEditLayerHeightExportEnabled() != bExportHeightDataPerEditLayer)
 	{
-		InInput->SetLandscapeExportMaterialsEnabled(bLandscapeExportMaterials);
+		InInput->SetExportHeightDataPerEditLayer(bExportHeightDataPerEditLayer);
 		bAnyChanges = true;
 	}
-	
-	if (InInput->IsLandscapeExportLightingEnabled() != bLandscapeExportLighting)
+
+	if (InInput->IsPaintLayerPerEditLayerExportEnabled() != bExportPaintLayersPerEditLayer)
 	{
-		InInput->SetLandscapeExportLightingEnabled(bLandscapeExportLighting);
+		InInput->SetExportPaintLayerPerEditLayer(bExportPaintLayersPerEditLayer);
 		bAnyChanges = true;
 	}
-	
-	if (InInput->IsLandscapeExportNormalizedUVsEnabled() != bLandscapeExportNormalizedUVs)
+
+
+	if (InInput->IsMergedPaintLayerExportEnabled() != bExportMergedPaintLayers)
 	{
-		InInput->SetLandscapeExportNormalizedUVsEnabled(bLandscapeExportNormalizedUVs);
-		bAnyChanges = true;
-	}
-	
-	if (InInput->IsLandscapeExportTileUVsEnabled() != bLandscapeExportTileUVs)
-	{
-		InInput->SetLandscapeExportTileUVsEnabled(bLandscapeExportTileUVs);
+		InInput->SetExportMergedPaintLayers(bExportMergedPaintLayers);
 		bAnyChanges = true;
 	}
 
 	if (bAnyChanges)
 	{
 		InInput->MarkChanged(true);
-	}
-	
-
-	return true;
-}
-
-UHoudiniPublicAPIGeometryCollectionInput::UHoudiniPublicAPIGeometryCollectionInput()
-{
-	bKeepWorldTransform = false;
-	// TODO: This class is quite similar to UHoudiniPublicAPIGeoInput. Maybe some sort of inheritance would be beneficial?
-}
-
-bool UHoudiniPublicAPIGeometryCollectionInput::SetObjectTransformOffset_Implementation(UObject* InObject,
-											const FTransform& InTransform)
-{
-	// Ensure that InObject is valid and has already been added as input object
-	if (!IsValid(InObject))
-	{
-		SetErrorMessage(TEXT("InObject is invalid."));
-		return false;
-	}
-
-	const int32 Index = InputObjects.Find(InObject);
-	if (Index == INDEX_NONE)
-	{
-		SetErrorMessage(FString::Printf(
-			TEXT("InObject '%s' is not currently set as input object on this input."), *(InObject->GetName())));
-		return false;
-	}
-
-	// InputObjectTransformOffsets.Add(InObject, InTransform);
-	if (!InputObjectTransformOffsetArray.IsValidIndex(Index))
-	{
-		const int32 NumTransforms = InputObjectTransformOffsetArray.Num();
-		InputObjectTransformOffsetArray.SetNum(Index + 1);
-		for (int32 TransformIndex = NumTransforms; TransformIndex < Index; ++TransformIndex)
-		{
-			InputObjectTransformOffsetArray[TransformIndex] = FTransform::Identity;
-		}
-	}
-	InputObjectTransformOffsetArray[Index] = InTransform;
-
-	return true;
-}
-
-bool UHoudiniPublicAPIGeometryCollectionInput::GetObjectTransformOffset_Implementation(UObject* InObject,
-	FTransform& OutTransform) const
-{
-	// Ensure that InObject is valid and has already been added as input object
-	if (!IsValid(InObject))
-	{
-		SetErrorMessage(TEXT("InObject is invalid."));
-		return false;
-	}
-
-	const int32 Index = InputObjects.Find(InObject);
-	if (Index == INDEX_NONE)
-	{
-		SetErrorMessage(FString::Printf(
-                        TEXT("InObject '%s' is not currently set as input object on this input."), *(InObject->GetName())));
-		return false;
-	}
-	
-	if (!InputObjectTransformOffsetArray.IsValidIndex(Index))
-	{
-		SetErrorMessage(FString::Printf(
-                        TEXT("InObject '%s' does not have a transform offset set."), *(InObject->GetName())));
-		return false;
-	}
-
-	OutTransform = InputObjectTransformOffsetArray[Index];
-	return true;
-}
-
-bool UHoudiniPublicAPIGeometryCollectionInput::SetInputObjectTransformOffset_Implementation(
-	const int32 InInputObjectIndex, const FTransform& InTransform)
-{
-	if (!InputObjects.IsValidIndex(InInputObjectIndex))
-	{
-		SetErrorMessage(TEXT("InInputObjectIndex is out of range."));
-		return false;
-	}
-
-	if (!InputObjectTransformOffsetArray.IsValidIndex(InInputObjectIndex))
-	{
-		const int32 NumTransforms = InputObjectTransformOffsetArray.Num();
-		InputObjectTransformOffsetArray.SetNum(InInputObjectIndex + 1);
-		for (int32 TransformIndex = NumTransforms; TransformIndex < InInputObjectIndex; ++TransformIndex)
-		{
-			InputObjectTransformOffsetArray[TransformIndex] = FTransform::Identity;
-		}
-	}
-	InputObjectTransformOffsetArray[InInputObjectIndex] = InTransform;
-
-	return true;
-}
-
-bool UHoudiniPublicAPIGeometryCollectionInput::GetInputObjectTransformOffset_Implementation(
-	const int32 InInputObjectIndex, FTransform& OutTransform) const
-{
-	if (!InputObjects.IsValidIndex(InInputObjectIndex))
-	{
-		SetErrorMessage(TEXT("InInputObjectIndex is out of range."));
-		return false;
-	}
-
-	if (!InputObjectTransformOffsetArray.IsValidIndex(InInputObjectIndex))
-	{
-		SetErrorMessage(FString::Printf(
-			TEXT("Input object at index '%d' does not have a transform offset set."), InInputObjectIndex));
-		return false;
-	}
-
-	OutTransform = InputObjectTransformOffsetArray[InInputObjectIndex];
-	return true;
-}
-
-bool
-UHoudiniPublicAPIGeometryCollectionInput::GetInputObjectTransformOffsetArray_Implementation(TArray<FTransform>& OutInputObjectTransformOffsetArray) const
-{
-	OutInputObjectTransformOffsetArray = InputObjectTransformOffsetArray;
-
-	return true;
-}
-
-bool
-UHoudiniPublicAPIGeometryCollectionInput::SetInputObjects_Implementation(const TArray<UObject*>& InObjects)
-{
-	const bool bSuccess = Super::SetInputObjects_Implementation(InObjects);
-
-	// Keep the transforms at the valid indices, resize the array to match InputObjects length. Set identity transform
-	// in new slots.
-	const int32 NumInputObjects = InputObjects.Num();
-	const int32 NumTransforms = InputObjectTransformOffsetArray.Num();
-	if (NumTransforms > NumInputObjects)
-	{
-		InputObjectTransformOffsetArray.SetNum(NumInputObjects);
-	}
-	else if (NumTransforms < NumInputObjects)
-	{
-		InputObjectTransformOffsetArray.Reserve(NumInputObjects);
-		for (int32 Index = NumTransforms; Index < NumInputObjects; ++Index)
-		{
-			InputObjectTransformOffsetArray.Emplace(FTransform::Identity);
-		}
-	}
-
-	return bSuccess;
-}
-
-bool UHoudiniPublicAPIGeometryCollectionInput::PopulateFromHoudiniInput(UHoudiniInput const* const InInput)
-{
-	const EHoudiniInputType InputType = GetInputType();
-	if (!IsValid(InInput))
-	{
-		SetErrorMessage(TEXT("InInput is invalid."));
-		return false;
-	}
-
-	if (InInput->GetInputType() != InputType)
-	{
-		SetErrorMessage(FString::Printf(
-                        TEXT("Incompatible input types %d vs %d"), InInput->GetInputType(), InputType));
-		return false;
-	}
-
-	bKeepWorldTransform = InInput->GetKeepWorldTransform();
-	bImportAsReference = InInput->GetImportAsReference();
-
-	const TArray<UHoudiniInputObject*>* SrcInputObjectsPtr = InInput->GetHoudiniInputObjectArray(InputType);
-	if (SrcInputObjectsPtr && SrcInputObjectsPtr->Num() > 0)
-	{
-		InputObjects.Empty(SrcInputObjectsPtr->Num()); 
-		for (UHoudiniInputObject const* const SrcInputObject : *SrcInputObjectsPtr)
-		{
-			if (!IsValid(SrcInputObject))
-				continue;
-
-			UObject* NewInputObject = ConvertInternalInputObject(SrcInputObject->GetObject());	
-			if (NewInputObject && !IsValid(NewInputObject))
-			{
-				SetErrorMessage(FString::Printf(
-					TEXT("One of the input objects is non-null but pending kill/invalid.")));
-				return false;
-			}
-			
-			InputObjects.Add(NewInputObject);
-
-			CopyHoudiniInputObjectPropertiesToInputObject(SrcInputObject, InputObjects.Num() - 1);
-		}
-	}
-
-	return true;
-}
-
-bool UHoudiniPublicAPIGeometryCollectionInput::UpdateHoudiniInput(UHoudiniInput* const InInput) const
-{
-	if (!IsValid(InInput))
-	{
-		SetErrorMessage(TEXT("InInput is invalid."));
-		return false;
-	}
-
-	// Set / change the input type
-	const EHoudiniInputType InputType = GetInputType();
-	bool bBlueprintStructureModified = false;
-	InInput->SetInputType(InputType, bBlueprintStructureModified);
-
-	// Set any general settings
-	bool bAnyChanges = false;
-	if (InInput->GetKeepWorldTransform() != bKeepWorldTransform)
-	{
-		InInput->SetKeepWorldTransform(bKeepWorldTransform);
-		bAnyChanges = true;
-	}
-	if (InInput->GetImportAsReference() != bImportAsReference)
-	{
-		InInput->SetImportAsReference(bImportAsReference);
-		bAnyChanges = true;
-	}
-
-	// Copy / set the input objects on the Houdini Input
-	const int32 NumInputObjects = InputObjects.Num();
-	InInput->SetInputObjectsNumber(InputType, NumInputObjects);
-	for (int32 Index = 0; Index < NumInputObjects; ++Index)
-	{
-		UObject* const InputObject = InputObjects[Index];
-
-		if (!IsValid(InputObject))
-		{
-			InInput->SetInputObjectAt(Index, nullptr);
-		}
-		else
-		{
-			ConvertAPIInputObjectAndAssignToInput(InputObject, InInput, Index);
-			UHoudiniInputObject *DstInputObject = InInput->GetHoudiniInputObjectAt(Index);
-			if (DstInputObject)
-				CopyInputObjectPropertiesToHoudiniInputObject(Index, DstInputObject);
-		}
-	}
-
-	if (bAnyChanges)
-	{
-		InInput->MarkChanged(true);
-	}
-
-	return true;
-}
-
-void
-UHoudiniPublicAPIGeometryCollectionInput::PostLoad()
-{
-	Super::PostLoad();
-
-#ifdef __clang__
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-#else
-#pragma warning(push)
-#pragma warning(disable : 4996)	// disable deprecation warning locally
-#endif
-
-	// Copy deprecated properties to the new ones and clear the deprecated properties.
-	if (HasAnyFlags(RF_WasLoaded))
-	{
-		if (InputObjectTransformOffsets_DEPRECATED.Num() > 0)
-		{
-			const int32 NumObjects = InputObjects.Num();
-			InputObjectTransformOffsetArray.SetNum(NumObjects);
-			for (int32 Index = 0; Index < NumObjects; ++Index)
-			{
-				UObject const* const InputObject = InputObjects[Index];
-				if (!IsValid(InputObject))
-				{
-					InputObjectTransformOffsetArray[Index] = FTransform::Identity;
-					continue;
-				}
-
-				FTransform const* const Transform = InputObjectTransformOffsets_DEPRECATED.Find(InputObject);
-				if (!Transform)
-				{
-					InputObjectTransformOffsetArray[Index] = FTransform::Identity;
-					continue;
-				}
-				
-				InputObjectTransformOffsetArray[Index] = *Transform;
-			}
-
-			InputObjectTransformOffsets_DEPRECATED.Empty();
-
-			MarkPackageDirty();
-		}
-	}
-
-#ifdef __clang__
-#pragma clang diagnostic pop
-#else
-#pragma warning(pop)
-#endif
-
-}
-
-bool UHoudiniPublicAPIGeometryCollectionInput::CopyHoudiniInputObjectPropertiesToInputObject(
-	UHoudiniInputObject const* const InHoudiniInputObject, const int32 InInputObjectIndex)
-{
-	if (!Super::CopyHoudiniInputObjectPropertiesToInputObject(InHoudiniInputObject, InInputObjectIndex))
-		return false;
-	
-	if (!IsValid(InHoudiniInputObject) || !InputObjects.IsValidIndex(InInputObjectIndex))
-		return false;
-
-	// Copy the transform offset
-	SetInputObjectTransformOffset(InInputObjectIndex, InHoudiniInputObject->GetTransform());
-
-	return true;
-}
-
-bool UHoudiniPublicAPIGeometryCollectionInput::CopyInputObjectPropertiesToHoudiniInputObject(
-	const int32 InInputObjectIndex, UHoudiniInputObject* const InHoudiniInputObject) const
-{
-	if (!Super::CopyInputObjectPropertiesToHoudiniInputObject(InInputObjectIndex, InHoudiniInputObject))
-		return false;
-
-	if (!InputObjects.IsValidIndex(InInputObjectIndex) || !IsValid(InHoudiniInputObject))
-		return false;
-
-	// Copy the transform offset
-	FTransform Transform;
-	if (!GetInputObjectTransformOffset(InInputObjectIndex, Transform))
-		Transform = FTransform::Identity;
-
-	if (!InHoudiniInputObject->GetTransform().Equals(Transform))
-	{
-		InHoudiniInputObject->SetTransform(Transform);
-		InHoudiniInputObject->MarkChanged(true);
-	}
+	}	
 
 	return true;
 }

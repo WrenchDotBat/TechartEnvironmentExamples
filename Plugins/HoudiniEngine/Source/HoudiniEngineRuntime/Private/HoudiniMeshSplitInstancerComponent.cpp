@@ -30,7 +30,6 @@
 #include "HoudiniEngineRuntimePrivatePCH.h"
 
 #include "HoudiniPluginSerializationVersion.h"
-#include "HoudiniCompatibilityHelpers.h"
 
 #include "UObject/DevObjectVersion.h"
 #include "Serialization/CustomVersion.h"
@@ -76,33 +75,17 @@ UHoudiniMeshSplitInstancerComponent::Serialize(FArchive& Ar)
 	if (bLegacyComponent)
 	{
 		// Legacy serialization
-		// Either try to convert or skip depending on the setting value
-		const UHoudiniRuntimeSettings * HoudiniRuntimeSettings = GetDefault<UHoudiniRuntimeSettings>();
-		bool bEnableBackwardCompatibility = HoudiniRuntimeSettings->bEnableBackwardCompatibility;
-		if (bEnableBackwardCompatibility)
+		HOUDINI_LOG_WARNING(TEXT("Loading deprecated version of UHoudiniMeshSplitInstancerComponent : serialization will be skipped."));
+
+		Super::Serialize(Ar);
+
+		// Skip v1 Serialized data
+		if (FLinker* Linker = Ar.GetLinker())
 		{
-			HOUDINI_LOG_WARNING(TEXT("Loading deprecated version of UHoudiniMeshSplitInstancerComponent : converting v1 object to v2."));
-
-			Super::Serialize(Ar);
-
-			UHoudiniMeshSplitInstancerComponent_V1* CompatibilityMSIC = NewObject<UHoudiniMeshSplitInstancerComponent_V1>();
-			CompatibilityMSIC->Serialize(Ar);
-			CompatibilityMSIC->UpdateFromLegacyData(this);
-		}
-		else
-		{
-			HOUDINI_LOG_WARNING(TEXT("Loading deprecated version of UHoudiniMeshSplitInstancerComponent : serialization will be skipped."));
-
-			Super::Serialize(Ar);
-
-			// Skip v1 Serialized data
-			if (FLinker* Linker = Ar.GetLinker())
-			{
-				int32 const ExportIndex = this->GetLinkerIndex();
-				FObjectExport& Export = Linker->ExportMap[ExportIndex];
-				Ar.Seek(InitialOffset + Export.SerialSize);
-				return;
-			}
+			int32 const ExportIndex = this->GetLinkerIndex();
+			FObjectExport& Export = Linker->ExportMap[ExportIndex];
+			Ar.Seek(InitialOffset + Export.SerialSize);
+			return;
 		}
 	}
 	else
@@ -123,13 +106,31 @@ UHoudiniMeshSplitInstancerComponent::OnComponentDestroyed( bool bDestroyingHiera
 void 
 UHoudiniMeshSplitInstancerComponent::AddReferencedObjects( UObject * InThis, FReferenceCollector & Collector )
 {
+	Super::AddReferencedObjects(InThis, Collector);
+
     UHoudiniMeshSplitInstancerComponent * ThisMSIC = Cast< UHoudiniMeshSplitInstancerComponent >(InThis);
     if ( IsValid(ThisMSIC) )
     {
-        Collector.AddReferencedObject(ThisMSIC->InstancedMesh, ThisMSIC);
-		for(auto& Mat : ThisMSIC->OverrideMaterials)
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 4
+        Collector.AddReferencedObject(ObjectPtrWrap(ThisMSIC->InstancedMesh), ThisMSIC);
+#else
+		Collector.AddReferencedObject(ThisMSIC->InstancedMesh, ThisMSIC);
+#endif
+
+		for (auto& Mat : ThisMSIC->OverrideMaterials)
+		{
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 4
+			Collector.AddReferencedObject(ObjectPtrWrap(Mat), ThisMSIC);
+#else
 			Collector.AddReferencedObject(Mat, ThisMSIC);
-        Collector.AddReferencedObjects(ThisMSIC->Instances, ThisMSIC);
+#endif
+		}
+
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 4
+		Collector.AddReferencedObjects(ObjectPtrWrap(ThisMSIC->Instances), ThisMSIC);
+#else
+		Collector.AddReferencedObjects(ThisMSIC->Instances, ThisMSIC);
+#endif
     }
 }
 

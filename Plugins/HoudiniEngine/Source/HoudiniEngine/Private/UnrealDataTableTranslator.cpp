@@ -29,6 +29,7 @@
 #include "UObject/TextProperty.h"
 
 #include "HoudiniEngine.h"
+#include "HoudiniEngineAttributes.h"
 #include "HoudiniEngineUtils.h"
 #include "HoudiniEnginePrivatePCH.h"
 #include "HoudiniInputObject.h"
@@ -106,14 +107,12 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 	FUnrealObjectInputHandle& OutHandle,
 	const bool& bInputNodesCanBeDeleted)
 {
-	const bool bUseRefCountedInputSystem = FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled();
 	FString FinalInputNodeName = InputNodeName;
 
 	FUnrealObjectInputIdentifier Identifier;
 	FUnrealObjectInputHandle ParentHandle;
 	HAPI_NodeId ParentNodeId = -1;
 
-	if (bUseRefCountedInputSystem)
 	{
 		const FUnrealObjectInputOptions Options;
 		Identifier = FUnrealObjectInputIdentifier(DataTable, Options, true);
@@ -228,9 +227,8 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 			Positions[RowIdx * 3 + 2] = 0.0f;
 		}
 
-		// Now that we have raw positions, we can upload them for our attribute.
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeFloatData(
-			Positions, InputNodeId, 0, HAPI_UNREAL_ATTRIB_POSITION, AttributeInfoPoint), false);
+		FHoudiniHapiAccessor Accessor(InputNodeId, 0, HAPI_UNREAL_ATTRIB_POSITION);
+		HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfoPoint, Positions), false);
 	}
 
 	{
@@ -252,8 +250,8 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 		FString ObjectPathName = DataTable->GetPathName();
 
 		// Set the point's path attribute
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeStringData(
-			ObjectPathName, InputNodeId, 0, HAPI_UNREAL_ATTRIB_OBJECT_PATH, AttributeInfoPoint), false);
+		FHoudiniHapiAccessor Accessor(InputNodeId, 0, HAPI_UNREAL_ATTRIB_OBJECT_PATH);
+		HOUDINI_CHECK_RETURN(Accessor.SetAttributeUniqueData(AttributeInfoPoint, ObjectPathName), false);
 	}
 
 	{
@@ -279,9 +277,8 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 #endif
 
 		// Set the point's path attribute
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeStringData(
-			RowStructName, InputNodeId, 0,
-			HAPI_UNREAL_ATTRIB_DATA_TABLE_ROWSTRUCT, AttributeInfoPoint), false);
+		FHoudiniHapiAccessor Accessor(InputNodeId, 0, HAPI_UNREAL_ATTRIB_DATA_TABLE_ROWSTRUCT);
+		HOUDINI_CHECK_RETURN(Accessor.SetAttributeUniqueData(AttributeInfoPoint, RowStructName), false);
 	}
 
 	{
@@ -306,8 +303,8 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 			Names.Add(KV.Key.ToString());
 		}
 
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeStringData(
-			Names, InputNodeId, 0, HAPI_UNREAL_ATTRIB_DATA_TABLE_ROWNAME, AttributeInfoPoint), false);
+		FHoudiniHapiAccessor Accessor(InputNodeId, 0, HAPI_UNREAL_ATTRIB_DATA_TABLE_ROWNAME);
+		HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfoPoint, Names), false);
 	}
 
 	// Now set the attributes values for each "point" of the data table
@@ -376,9 +373,8 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 				FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 				TCHAR_TO_ANSI(*CurAttrName), &AttributeInfo), false);
 
-			HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeInt8Data(
-				Col, InputNodeId, 0,
-				CurAttrName, AttributeInfo), false);
+			FHoudiniHapiAccessor Accessor(InputNodeId, 0, TCHAR_TO_ANSI(*CurAttrName));
+			HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, Col), false);
 		}
 		// Text treated separately because the method used for string fallback
 		// doesn't cleanly convert this
@@ -403,9 +399,8 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 				FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 				TCHAR_TO_ANSI(*CurAttrName), &AttributeInfo), false);
 
-			HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeStringData(
-				Col, InputNodeId, 0,
-				CurAttrName, AttributeInfo), false);
+			FHoudiniHapiAccessor Accessor(InputNodeId, 0, TCHAR_TO_ANSI(*CurAttrName));
+			HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, Col), false);
 		}
 		else if (bIsNumericProperty && !bIsEnumProperty)
 		{
@@ -421,9 +416,8 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 						FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 						TCHAR_TO_ANSI(*CurAttrName), &AttributeInfo), false);
 
-					HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeUInt8Data(
-						Col, InputNodeId, 0,
-						CurAttrName, AttributeInfo), false);
+					FHoudiniHapiAccessor Accessor(InputNodeId, 0, TCHAR_TO_ANSI(*CurAttrName));
+					HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, Col), false);
 				}
 				else if (NumProp->IsA<FInt16Property>())
 				{
@@ -434,9 +428,9 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 						FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 						TCHAR_TO_ANSI(*CurAttrName), &AttributeInfo), false);
 
-					HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeInt16Data(
-						Col, InputNodeId, 0,
-						CurAttrName, AttributeInfo), false);
+					FHoudiniHapiAccessor Accessor(InputNodeId, 0, TCHAR_TO_ANSI(*CurAttrName));
+					HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, Col), false);
+
 				}
 				else if (NumProp->IsA<FInt8Property>())
 				{
@@ -447,9 +441,8 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 						FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 						TCHAR_TO_ANSI(*CurAttrName), &AttributeInfo), false);
 
-					HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeInt8Data(
-						Col, InputNodeId, 0,
-						CurAttrName, AttributeInfo), false);
+					FHoudiniHapiAccessor Accessor(InputNodeId, 0, TCHAR_TO_ANSI(*CurAttrName));
+					HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, Col), false);
 				}
 				else if (NumProp->IsA<FIntProperty>())
 				{
@@ -460,9 +453,8 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 						FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 						TCHAR_TO_ANSI(*CurAttrName), &AttributeInfo), false);
 
-					HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeIntData(
-						Col, InputNodeId, 0,
-						CurAttrName, AttributeInfo), false);
+					FHoudiniHapiAccessor Accessor(InputNodeId, 0, TCHAR_TO_ANSI(*CurAttrName));
+					HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, Col), false);
 				}
 				// There is no uint16 datatype in Houdini, convert to int32
 				else if (NumProp->IsA<FUInt16Property>())
@@ -474,9 +466,9 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 						FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 						TCHAR_TO_ANSI(*CurAttrName), &AttributeInfo), false);
 
-					HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeUInt16Data(
-						Col, InputNodeId, 0,
-						CurAttrName, AttributeInfo), false);
+					FHoudiniHapiAccessor Accessor(InputNodeId, 0, TCHAR_TO_ANSI(*CurAttrName));
+					HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, Col), false);
+
 				}
 				// There is no uint32 datatype in Houdini, convert to int64
 				else if (NumProp->IsA<FUInt32Property>())
@@ -488,9 +480,8 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 						FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 						TCHAR_TO_ANSI(*CurAttrName), &AttributeInfo), false);
 
-					HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeUIntData(
-						Col, InputNodeId, 0,
-						CurAttrName, AttributeInfo), false);
+					FHoudiniHapiAccessor Accessor(InputNodeId, 0, TCHAR_TO_ANSI(*CurAttrName));
+					HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, Col), false);
 				}
 				// There is no uint64 datatype in Houdini, since there is
 				// no int128, just force a conversion to signed int64
@@ -503,9 +494,8 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 						FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 						TCHAR_TO_ANSI(*CurAttrName), &AttributeInfo), false);
 
-					HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeUInt64Data(
-						Col, InputNodeId, 0,
-						CurAttrName, AttributeInfo), false);
+					FHoudiniHapiAccessor Accessor(InputNodeId, 0, TCHAR_TO_ANSI(*CurAttrName));
+					HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, Col), false);
 				}
 				// Default to signed int64.
 				else
@@ -517,9 +507,8 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 						FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 						TCHAR_TO_ANSI(*CurAttrName), &AttributeInfo), false);
 
-					HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeInt64Data(
-						Col, InputNodeId, 0,
-						CurAttrName, AttributeInfo), false);
+					FHoudiniHapiAccessor Accessor(InputNodeId, 0, TCHAR_TO_ANSI(*CurAttrName));
+					HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, Col), false);
 				}
 			}
 			else if (NumProp->IsFloatingPoint())
@@ -533,9 +522,8 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 						FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 						TCHAR_TO_ANSI(*CurAttrName), &AttributeInfo), false);
 
-					HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeFloatData(
-						Col, InputNodeId, 0,
-						CurAttrName, AttributeInfo, true), false);
+					FHoudiniHapiAccessor Accessor(InputNodeId, 0, TCHAR_TO_ANSI(*CurAttrName));
+					HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, Col), false);
 				}
 				// Default to double precision floating point.
 				else
@@ -547,9 +535,8 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 						FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 						TCHAR_TO_ANSI(*CurAttrName), &AttributeInfo), false);
 
-					HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeDoubleData(
-						Col, InputNodeId, 0,
-						CurAttrName, AttributeInfo), false);
+					FHoudiniHapiAccessor Accessor(InputNodeId, 0, TCHAR_TO_ANSI(*CurAttrName));
+					HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, Col), false);
 				}
 			}
 			else
@@ -662,27 +649,28 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 						FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 						TCHAR_TO_ANSI(*RotName), &AttributeInfo), false);
 
-					HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeDoubleData(
-						RotValues, InputNodeId, 0,
-						RotName, AttributeInfo), false);
+					FHoudiniHapiAccessor Accessor;
+					Accessor.Init(InputNodeId, 0, TCHAR_TO_ANSI(*RotName));
+					HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, RotValues), false);
 
 					AttributeInfo.tupleSize = 3;
+
 					// Scale
+
 					HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::AddAttribute(
 						FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 						TCHAR_TO_ANSI(*ScaleName), &AttributeInfo), false);
 
-					HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeDoubleData(
-						ScaleValues, InputNodeId, 0,
-						ScaleName, AttributeInfo), false);
+					Accessor.Init(InputNodeId, 0, TCHAR_TO_ANSI(*ScaleName));
+					HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, ScaleValues), false);
+
 					// Translate
 					HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::AddAttribute(
 						FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 						TCHAR_TO_ANSI(*TransName), &AttributeInfo), false);
 
-					HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeDoubleData(
-						TransValues, InputNodeId, 0,
-						TransName, AttributeInfo), false);
+					Accessor.Init(InputNodeId, 0, TCHAR_TO_ANSI(*TransName));
+					HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, TransValues), false);
 
 					continue;
 				}
@@ -725,9 +713,9 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 						FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 						TCHAR_TO_ANSI(*CurAttrName + *TEXT("_rotation")), &AttributeInfo), false);
 
-					HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeFloatData(
-						RotValues, InputNodeId, 0,
-						CurAttrName + TEXT("_rotation"), AttributeInfo), false);
+					FString Name = CurAttrName + TEXT("_rotation");
+					FHoudiniHapiAccessor Accessor(InputNodeId, 0, TCHAR_TO_ANSI(*Name));
+					HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, RotValues), false);
 
 					AttributeInfo.tupleSize = 3;
 					// Scale
@@ -735,17 +723,18 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 						FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 						TCHAR_TO_ANSI(*CurAttrName + *TEXT("_scale")), &AttributeInfo), false);
 
-					HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeFloatData(
-						ScaleValues, InputNodeId, 0,
-						CurAttrName + TEXT("_scale"), AttributeInfo), false);
+					Name = CurAttrName + *TEXT("_scale");
+					Accessor.Init(InputNodeId, 0, TCHAR_TO_ANSI(*Name));
+					HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, ScaleValues), false);
+
 					// Translate
 					HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::AddAttribute(
 						FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 						TCHAR_TO_ANSI(*CurAttrName + *TEXT("_translate")), &AttributeInfo), false);
 
-					HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeFloatData(
-						TransValues, InputNodeId, 0,
-						CurAttrName + TEXT("_translate"), AttributeInfo), false);
+					Name = CurAttrName + TEXT("_translate");
+					Accessor.Init(InputNodeId, 0, TCHAR_TO_ANSI(*Name));
+					HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, TransValues), false);
 
 					continue;
 				}
@@ -762,9 +751,8 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 							FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 							TCHAR_TO_ANSI(*CurAttrName), &AttributeInfo), false);
 
-						HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeUInt8Data(
-							Col, InputNodeId, 0,
-							CurAttrName, AttributeInfo), false);
+						FHoudiniHapiAccessor Accessor(InputNodeId, 0, TCHAR_TO_ANSI(*CurAttrName));
+						HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, Col), false);
 						continue;
 					}
 					// Floats
@@ -775,9 +763,8 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 							FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 							TCHAR_TO_ANSI(*CurAttrName), &AttributeInfo), false);
 
-						HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeFloatData(
-							Col, InputNodeId, 0,
-							CurAttrName, AttributeInfo), false);
+						FHoudiniHapiAccessor Accessor(InputNodeId, 0, TCHAR_TO_ANSI(*CurAttrName));
+						HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, Col), false);
 						continue;
 					}
 					// Doubles
@@ -788,9 +775,9 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 							FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 							TCHAR_TO_ANSI(*CurAttrName), &AttributeInfo), false);
 
-						HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeDoubleData(
-							Col, InputNodeId, 0,
-							CurAttrName, AttributeInfo), false);
+						FHoudiniHapiAccessor Accessor(InputNodeId, 0, TCHAR_TO_ANSI(*CurAttrName));
+						HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, Col), false);
+
 						continue;
 					}
 					// Something else
@@ -815,19 +802,15 @@ bool FUnrealDataTableTranslator::CreateInputNodeForDataTable(
 				FHoudiniEngine::Get().GetSession(), InputNodeId, 0,
 				TCHAR_TO_ANSI(*CurAttrName), &AttributeInfo), false);
 
-			HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeStringData(Col, InputNodeId, 0,
-				CurAttrName, AttributeInfo), false);
+			FHoudiniHapiAccessor Accessor(InputNodeId, 0, TCHAR_TO_ANSI(*CurAttrName));
+			HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, Col), false);
 		}
 	}
 
-
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::CommitGeo(
-		FHoudiniEngine::Get().GetSession(), InputNodeId), false);
-
+	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiCommitGeo(InputNodeId), false);
 	if (!FHoudiniEngineUtils::HapiCookNode(InputNodeId, nullptr, true))
 		return false;
 
-	if (bUseRefCountedInputSystem)
 	{
 		FUnrealObjectInputHandle Handle;
 		if (FUnrealObjectInputUtils::AddNodeOrUpdateNode(Identifier, InputNodeId, Handle, InputObjectNodeId, nullptr, bInputNodesCanBeDeleted))

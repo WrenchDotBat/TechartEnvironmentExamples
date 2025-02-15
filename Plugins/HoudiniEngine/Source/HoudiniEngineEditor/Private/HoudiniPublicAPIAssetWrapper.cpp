@@ -29,10 +29,13 @@
 
 #include "HoudiniAssetActor.h"
 #include "HoudiniAssetComponent.h"
+#include "HoudiniEngine.h"
 #include "HoudiniEngineBakeUtils.h"
 #include "HoudiniEngineCommands.h"
 #include "HoudiniEngineEditorUtils.h"
+#include "HoudiniEngineManager.h"
 #include "HoudiniEngineUtils.h"
+#include "HoudiniNodeSyncComponent.h"
 #include "HoudiniOutputDetails.h"
 #include "HoudiniParameter.h"
 #include "HoudiniParameterButton.h"
@@ -51,6 +54,9 @@
 #include "HoudiniPublicAPIBlueprintLib.h"
 #include "HoudiniPublicAPIInputTypes.h"
 #include <Selection.h>
+#include "Landscape.h"
+#include "LandscapeInfo.h"
+#include "LandscapeStreamingProxy.h"
 
 FHoudiniPublicAPIRampPoint::FHoudiniPublicAPIRampPoint()
 	: Position(0)
@@ -237,7 +243,11 @@ UHoudiniPublicAPIAssetWrapper::SetTemporaryCookFolder_Implementation(const FDire
 		return false;
 
 	if (HAC->TemporaryCookFolder.Path != InDirectoryPath.Path)
+	{
 		HAC->TemporaryCookFolder = InDirectoryPath;
+		HAC->Modify();
+	}
+
 	return true;
 }
 
@@ -260,7 +270,11 @@ UHoudiniPublicAPIAssetWrapper::SetBakeFolder_Implementation(const FDirectoryPath
 		return false;
 
 	if (HAC->BakeFolder.Path != InDirectoryPath.Path)
+	{
 		HAC->BakeFolder = InDirectoryPath;
+		HAC->Modify();
+	}
+
 	return true;
 }
 
@@ -271,12 +285,14 @@ UHoudiniPublicAPIAssetWrapper::BakeAllOutputs_Implementation()
 	if (!GetValidHoudiniAssetComponentWithError(HAC))
 		return false;
 
+	FHoudiniBakeSettings BakeSettings;
+	BakeSettings.SetFromHAC(HAC);
+
 	return FHoudiniEngineBakeUtils::BakeHoudiniAssetComponent(
 		HAC,
-		HAC->bReplacePreviousBake,
+		BakeSettings,
 		HAC->HoudiniEngineBakeOption,
-		HAC->bRemoveOutputAfterBake,
-		HAC->bRecenterBakedActors);
+		HAC->bRemoveOutputAfterBake);
 }
 
 bool
@@ -290,7 +306,12 @@ UHoudiniPublicAPIAssetWrapper::BakeAllOutputsWithSettings_Implementation(
 	if (!GetValidHoudiniAssetComponentWithError(HAC))
 		return false;
 
-	return FHoudiniEngineBakeUtils::BakeHoudiniAssetComponent(HAC, bInReplacePreviousBake, InBakeOption, bInRemoveTempOutputsOnSuccess, bInRecenterBakedActors);
+	FHoudiniBakeSettings BakeSettings;
+	BakeSettings.bReplaceActors = bInReplacePreviousBake;
+	BakeSettings.bReplaceAssets = bInReplacePreviousBake;
+	BakeSettings.bRecenterBakedActors = bInRecenterBakedActors;
+
+	return FHoudiniEngineBakeUtils::BakeHoudiniAssetComponent(HAC, BakeSettings, InBakeOption, bInRemoveTempOutputsOnSuccess);
 }
 
 bool
@@ -300,7 +321,12 @@ UHoudiniPublicAPIAssetWrapper::SetAutoBakeEnabled_Implementation(const bool bInA
 	if (!GetValidHoudiniAssetComponentWithError(HAC))
 		return false;
 
-	HAC->SetBakeAfterNextCook(bInAutoBakeEnabled ? EHoudiniBakeAfterNextCook::Always : EHoudiniBakeAfterNextCook::Disabled);
+	EHoudiniBakeAfterNextCook bAutoBake = bInAutoBakeEnabled ? EHoudiniBakeAfterNextCook::Always : EHoudiniBakeAfterNextCook::Disabled;
+	if (HAC->GetBakeAfterNextCook() != bAutoBake)
+	{
+		HAC->SetBakeAfterNextCook(bAutoBake);
+		HAC->Modify();
+	}
 
 	return true;
 }
@@ -322,7 +348,11 @@ UHoudiniPublicAPIAssetWrapper::SetBakeMethod_Implementation(const EHoudiniEngine
 	if (!GetValidHoudiniAssetComponentWithError(HAC))
 		return false;
 
-	HAC->HoudiniEngineBakeOption = InBakeMethod;
+	if (HAC->HoudiniEngineBakeOption != InBakeMethod)
+	{
+		HAC->HoudiniEngineBakeOption = InBakeMethod;
+		HAC->Modify();
+	}
 
 	return true;
 }
@@ -368,7 +398,11 @@ UHoudiniPublicAPIAssetWrapper::SetRecenterBakedActors_Implementation(const bool 
 	if (!GetValidHoudiniAssetComponentWithError(HAC))
 		return false;
 
-	HAC->bRecenterBakedActors = bInRecenterBakedActors;
+	if (HAC->bRecenterBakedActors != bInRecenterBakedActors)
+	{
+		HAC->bRecenterBakedActors = bInRecenterBakedActors;
+		HAC->Modify();
+	}
 
 	return true;
 }
@@ -390,7 +424,11 @@ UHoudiniPublicAPIAssetWrapper::SetReplacePreviousBake_Implementation(const bool 
 	if (!GetValidHoudiniAssetComponentWithError(HAC))
 		return false;
 
-	HAC->bReplacePreviousBake = bInReplacePreviousBake;
+	if (HAC->bReplacePreviousBake != bInReplacePreviousBake)
+	{
+		HAC->bReplacePreviousBake = bInReplacePreviousBake;
+		HAC->Modify();
+	}
 
 	return true;
 }
@@ -403,6 +441,41 @@ UHoudiniPublicAPIAssetWrapper::GetReplacePreviousBake_Implementation() const
 		return false;
 
 	return HAC->bReplacePreviousBake;
+}
+
+TArray<AActor*>
+UHoudiniPublicAPIAssetWrapper::GetBakedOutputActors_Implementation()
+{
+	TArray<AActor*> OutputActors;
+	UHoudiniAssetComponent* HAC = nullptr;
+	if (!GetValidHoudiniAssetComponentWithError(HAC))
+		return OutputActors;
+
+	const TArray<FHoudiniBakedOutput>& BakedOutputs = HAC->GetBakedOutputs();
+	for (const FHoudiniBakedOutput& BakedOutput : BakedOutputs) 
+	{
+		for (const auto& BakedPair : BakedOutput.BakedOutputObjects) 
+		{
+			AActor* Actor = BakedPair.Value.GetActorIfValid(true);
+			if (Actor)
+				OutputActors.Add(Actor);
+
+			// Get valid Foliage Actors
+			OutputActors.Append(BakedPair.Value.GetFoliageActorsIfValid(true));
+
+			// Get valid instanced actors
+			TArray<AActor*> InstancedActors = BakedPair.Value.GetInstancedActorsIfValid(true);
+			OutputActors.Append(InstancedActors);
+
+			// Get valid Landscape and Proxies
+			ALandscape* BakedLandscape = BakedPair.Value.GetLandscapeIfValid(true);
+			if (BakedLandscape)
+				OutputActors.Add(BakedLandscape);
+
+		}
+	}
+
+	return OutputActors;
 }
 
 bool
@@ -662,6 +735,8 @@ UHoudiniPublicAPIAssetWrapper::SetAutoCookingEnabled_Implementation(const bool b
 		return false;
 
 	HAC->SetCookingEnabled(bInSetEnabled);
+	HAC->Modify();
+
 	return true;
 }
 
@@ -676,6 +751,33 @@ UHoudiniPublicAPIAssetWrapper::IsAutoCookingEnabled_Implementation() const
 }
 
 bool
+UHoudiniPublicAPIAssetWrapper::SetDoNotGenerateOutputs_Implementation(const bool bInSetEnabled)
+{
+	UHoudiniAssetComponent* HAC = nullptr;
+	if (!GetValidHoudiniAssetComponentWithError(HAC))
+		return false;
+
+	if (HAC->bOutputless == bInSetEnabled)
+		return false;
+
+	HAC->bOutputless = bInSetEnabled;
+	HAC->Modify();
+
+	return true;
+}
+
+bool
+UHoudiniPublicAPIAssetWrapper::IsDoNotGenerateOutputsEnabled_Implementation() const
+{
+	UHoudiniAssetComponent* HAC = nullptr;
+	if (!GetValidHoudiniAssetComponentWithError(HAC))
+		return false;
+
+	return HAC->bOutputless;
+}
+
+
+bool
 UHoudiniPublicAPIAssetWrapper::SetCookOnParameterOrInputChanges_Implementation(const bool bInSetEnabled)
 {
 	UHoudiniAssetComponent* HAC = nullptr;
@@ -686,6 +788,8 @@ UHoudiniPublicAPIAssetWrapper::SetCookOnParameterOrInputChanges_Implementation(c
 		return false;
 
 	HAC->bCookOnParameterChange = bInSetEnabled;
+	HAC->Modify();
+
 	return true;
 }
 
@@ -710,6 +814,8 @@ UHoudiniPublicAPIAssetWrapper::SetCookOnTransformChange_Implementation(const boo
 		return false;
 
 	HAC->bCookOnTransformChange = bInSetEnabled;
+	HAC->Modify();
+
 	return true;
 }
 
@@ -734,6 +840,8 @@ UHoudiniPublicAPIAssetWrapper::SetCookOnAssetInputCook_Implementation(const bool
 		return false;
 
 	HAC->bCookOnAssetInputCook = bInSetEnabled;
+	HAC->Modify();
+
 	return true;
 }
 
@@ -1539,14 +1647,14 @@ UHoudiniPublicAPIAssetWrapper::SetRampParameterNumPoints_Implementation(FName In
 
 		// Update the ramp's widget if it is currently visible/selected
 		const bool bForceFullUpdate = true;
-		FHoudiniEngineUtils::UpdateEditorProperties(Param, bForceFullUpdate);
+		FHoudiniEngineUtils::UpdateEditorProperties(bForceFullUpdate);
 	}
 	else
 	{
 		int32 NumPendingInsertOperations = 0;
 		int32 NumPendingDeleteOperations = 0;
 		TSet<int32> InstanceIndexesPendingDelete;
-		TArray<UHoudiniParameterRampModificationEvent*>& ModificationEvents = FloatRampParam ? FloatRampParam->ModificationEvents : ColorRampParam->ModificationEvents;
+		TArray<TObjectPtr<UHoudiniParameterRampModificationEvent>>& ModificationEvents = FloatRampParam ? FloatRampParam->ModificationEvents : ColorRampParam->ModificationEvents;
 		for (UHoudiniParameterRampModificationEvent const* const Event : ModificationEvents)
 		{
 			if (!IsValid(Event))
@@ -1749,7 +1857,7 @@ UHoudiniPublicAPIAssetWrapper::GetRampParameterNumPoints_Implementation(FName In
 	{
 		int32 NumPendingInsertOperations = 0;
 		int32 NumPendingDeleteOperations = 0;
-		TArray<UHoudiniParameterRampModificationEvent*>& ModificationEvents = FloatRampParam ? FloatRampParam->ModificationEvents : ColorRampParam->ModificationEvents;
+		TArray<TObjectPtr<UHoudiniParameterRampModificationEvent>>& ModificationEvents = FloatRampParam ? FloatRampParam->ModificationEvents : ColorRampParam->ModificationEvents;
 		for (UHoudiniParameterRampModificationEvent const* const Event : ModificationEvents)
 		{
 			if (!IsValid(Event))
@@ -1944,7 +2052,7 @@ UHoudiniPublicAPIAssetWrapper::SetFloatRampParameterPoints_Implementation(
 	{
 		// Update the ramp's widget if it is currently visible/selected
 		const bool bForceFullUpdate = true;
-		FHoudiniEngineUtils::UpdateEditorProperties(Param, bForceFullUpdate);
+		FHoudiniEngineUtils::UpdateEditorProperties(bForceFullUpdate);
 	}
 	
 	return true;
@@ -1985,7 +2093,11 @@ UHoudiniPublicAPIAssetWrapper::GetFloatRampParameterPoints_Implementation(
 
 	OutRampPoints.Reserve(RampPointData.Num());
 	const bool bAllowShrinking = false;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
+	OutRampPoints.SetNum(0, bAllowShrinking ? EAllowShrinking::Yes : EAllowShrinking::No);
+#else
 	OutRampPoints.SetNum(0, bAllowShrinking);
+#endif
 	for (TPair<UObject*, bool> const& Entry : RampPointData)
 	{
 		UObject* const PointData = Entry.Key;
@@ -2210,7 +2322,7 @@ UHoudiniPublicAPIAssetWrapper::SetColorRampParameterPoints_Implementation(
 	{
 		// Update the ramp's widget if it is currently visible/selected
 		const bool bForceFullUpdate = true;
-		FHoudiniEngineUtils::UpdateEditorProperties(Param, bForceFullUpdate);
+		FHoudiniEngineUtils::UpdateEditorProperties(bForceFullUpdate);
 	}
 
 	return true;
@@ -2251,7 +2363,11 @@ UHoudiniPublicAPIAssetWrapper::GetColorRampParameterPoints_Implementation(
 
 	OutRampPoints.Reserve(RampPointData.Num());
 	const bool bAllowShrinking = false;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
+	OutRampPoints.SetNum(0, bAllowShrinking ? EAllowShrinking::Yes : EAllowShrinking::No);
+#else
 	OutRampPoints.SetNum(0, bAllowShrinking);
+#endif
 	for (TPair<UObject*, bool> const& Entry : RampPointData)
 	{
 		UObject* const PointData = Entry.Key;
@@ -2767,7 +2883,7 @@ UHoudiniPublicAPIAssetWrapper::GetInputParameters_Implementation(TMap<FName, UHo
 		if (!bSuccessfullyCopied)
 			bAnyFailures = true;
 		
-		OutInputs.Add(FName(HoudiniInput->GetName()), APIInput);
+		OutInputs.Add(FName(HoudiniInput->GetInputName()), APIInput);
 	}
 
 	return !bAnyFailures; 
@@ -2878,7 +2994,11 @@ UHoudiniPublicAPIAssetWrapper::SetOutputBakeNameFallbackAt_Implementation(const 
 }
 
 bool
-UHoudiniPublicAPIAssetWrapper::BakeOutputObjectAt_Implementation(const int32 InIndex, const FHoudiniPublicAPIOutputObjectIdentifier& InIdentifier, const FName InBakeName, const EHoudiniLandscapeOutputBakeType InLandscapeBakeType)
+UHoudiniPublicAPIAssetWrapper::BakeOutputObjectAt_Implementation(
+	const int32 InIndex, 
+	const FHoudiniPublicAPIOutputObjectIdentifier& InIdentifier, 
+	const FName InBakeName, 
+	const EHoudiniLandscapeOutputBakeType InLandscapeBakeType)
 {
 	UHoudiniAssetComponent* HAC = nullptr;
 	if (!GetValidHoudiniAssetComponentWithError(HAC))
@@ -2922,7 +3042,7 @@ UHoudiniPublicAPIAssetWrapper::BakeOutputObjectAt_Implementation(const int32 InI
 			}
 			break;
 		}
-	case EHoudiniOutputType::Curve:
+		case EHoudiniOutputType::Curve:
 			ObjectToBake = OutputObject->OutputComponents.Num() > 0 ? OutputObject->OutputComponents[0] : nullptr;
 			break;
 		case EHoudiniOutputType::Mesh:
@@ -2964,6 +3084,10 @@ UHoudiniPublicAPIAssetWrapper::BakeOutputObjectAt_Implementation(const int32 InI
 	TArray<UHoudiniOutput*> AllOutputs;
 	HAC->GetOutputs(AllOutputs);
 
+	FHoudiniBakeSettings BakeSettings;
+	BakeSettings.SetFromHAC(HAC);
+
+	void SetFromHAC(UHoudiniAssetComponent * HAC);
 	FHoudiniOutputDetails::OnBakeOutputObject(
 		InBakeName.IsNone() ? OutputObject->BakeName : InBakeName.ToString(),
 		ObjectToBake,
@@ -2971,9 +3095,10 @@ UHoudiniPublicAPIAssetWrapper::BakeOutputObjectAt_Implementation(const int32 InI
 		*OutputObject,
 		HoudiniGeoPartObject,
 		HAC,
+		Output,
 		HAC->BakeFolder.Path,
+		BakeSettings,
 		HAC->TemporaryCookFolder.Path,
-		OutputType,
 		InLandscapeBakeType,
 		AllOutputs);
 
@@ -3132,9 +3257,7 @@ UHoudiniPublicAPIAssetWrapper::PDGCookOutputsForNetwork_Implementation(const FSt
 	if (!GetValidTOPNetworkByPathWithError(InNetworkRelativePath, NetworkIndex, TOPNet))
 		return false;
 
-	FHoudiniPDGManager::CookOutput(TOPNet);
-
-	return true;
+	return FHoudiniPDGManager::CookOutput(TOPNet);
 }
 
 bool
@@ -3146,9 +3269,7 @@ UHoudiniPublicAPIAssetWrapper::PDGCookNode_Implementation(const FString& InNetwo
 	if (!GetValidTOPNodeByPathWithError(InNetworkRelativePath, InNodeRelativePath, NetworkIndex, NodeIndex, TOPNode))
 		return false;
 
-	FHoudiniPDGManager::CookTOPNode(TOPNode);
-
-	return true;
+	return FHoudiniPDGManager::CookTOPNode(TOPNode);
 }
 
 bool
@@ -3208,7 +3329,12 @@ UHoudiniPublicAPIAssetWrapper::SetPDGAutoBakeEnabled_Implementation(const bool b
 	if (!GetValidHoudiniPDGAssetLinkWithError(AssetLink))
 		return false;
 
-	AssetLink->bBakeAfterAllWorkResultObjectsLoaded = bInAutoBakeEnabled;
+	if (AssetLink->bBakeAfterAllWorkResultObjectsLoaded != bInAutoBakeEnabled)
+	{
+		AssetLink->bBakeAfterAllWorkResultObjectsLoaded = bInAutoBakeEnabled;
+		if(AssetLink->GetOuter())
+			AssetLink->GetOuter()->Modify();
+	}
 
 	return true;
 }
@@ -3230,7 +3356,12 @@ UHoudiniPublicAPIAssetWrapper::SetPDGAutoBakeNodesWithFailedWorkItemsEnabled_Imp
 	if (!GetValidHoudiniPDGAssetLinkWithError(AssetLink))
 		return false;
 
-	AssetLink->SetAutoBakeNodesWithFailedWorkItemsEnabled(bInEnabled);
+	if (AssetLink->IsAutoBakeNodesWithFailedWorkItemsEnabled() != bInEnabled)
+	{
+		AssetLink->SetAutoBakeNodesWithFailedWorkItemsEnabled(bInEnabled);
+		if(AssetLink->GetOuter())
+			AssetLink->GetOuter()->Modify();
+	}
 
 	return true;
 }
@@ -3252,7 +3383,12 @@ UHoudiniPublicAPIAssetWrapper::SetPDGBakeMethod_Implementation(const EHoudiniEng
 	if (!GetValidHoudiniPDGAssetLinkWithError(AssetLink))
 		return false;
 
-	AssetLink->HoudiniEngineBakeOption = InBakeMethod;
+	if (AssetLink->HoudiniEngineBakeOption != InBakeMethod)
+	{
+		AssetLink->HoudiniEngineBakeOption = InBakeMethod;
+		if(AssetLink->GetOuter())
+			AssetLink->GetOuter()->Modify();
+	}
 
 	return true;
 }
@@ -3276,7 +3412,12 @@ UHoudiniPublicAPIAssetWrapper::SetPDGBakeSelection_Implementation(const EPDGBake
 	if (!GetValidHoudiniPDGAssetLinkWithError(AssetLink))
 		return false;
 
-	AssetLink->PDGBakeSelectionOption = InBakeSelection;
+	if (AssetLink->PDGBakeSelectionOption != InBakeSelection)
+	{
+		AssetLink->PDGBakeSelectionOption = InBakeSelection;
+		if(AssetLink->GetOuter())
+			AssetLink->GetOuter()->Modify();
+	}
 
 	return true;
 }
@@ -3300,7 +3441,12 @@ UHoudiniPublicAPIAssetWrapper::SetPDGRecenterBakedActors_Implementation(const bo
 	if (!GetValidHoudiniPDGAssetLinkWithError(AssetLink))
 		return false;
 
-	AssetLink->bRecenterBakedActors = bInRecenterBakedActors;
+	if (AssetLink->bRecenterBakedActors != bInRecenterBakedActors)
+	{
+		AssetLink->bRecenterBakedActors = bInRecenterBakedActors;
+		if(AssetLink->GetOuter())
+			AssetLink->GetOuter()->Modify();
+	}
 
 	return true;
 }
@@ -3322,7 +3468,12 @@ UHoudiniPublicAPIAssetWrapper::SetPDGBakingReplacementMode_Implementation(const 
 	if (!GetValidHoudiniPDGAssetLinkWithError(AssetLink))
 		return false;
 
-	AssetLink->PDGBakePackageReplaceMode = InBakingReplacementMode;
+	if (AssetLink->PDGBakePackageReplaceMode != InBakingReplacementMode)
+	{
+		AssetLink->PDGBakePackageReplaceMode = InBakingReplacementMode;
+		if(AssetLink->GetOuter())
+			AssetLink->GetOuter()->Modify();
+	}
 
 	return true;
 }
@@ -3581,7 +3732,11 @@ UHoudiniPublicAPIAssetWrapper::FindRampPointData(
 				// Get all points
 				OutPointData.Reserve(FloatRampParam->CachedPoints.Num());
 				const bool bAllowShrinking = false;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
+				OutPointData.SetNum(0, bAllowShrinking ? EAllowShrinking::Yes : EAllowShrinking::No);
+#else
 				OutPointData.SetNum(0, bAllowShrinking);
+#endif
 				for (UHoudiniParameterRampFloatPoint* const RampPoint : FloatRampParam->CachedPoints)
 				{
 					const bool bIsPointData = true;
@@ -3592,8 +3747,11 @@ UHoudiniPublicAPIAssetWrapper::FindRampPointData(
 			{
 				OutPointData.Reserve(1);
 				const bool bAllowShrinking = false;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
+				OutPointData.SetNum(0, bAllowShrinking ? EAllowShrinking::Yes : EAllowShrinking::No);
+#else
 				OutPointData.SetNum(0, bAllowShrinking);
-				
+#endif
 				const bool bIsPointData = true;
 				OutPointData.Add(TPair<UObject*, bool>(FloatRampParam->CachedPoints[InIndex], bIsPointData));
 			}
@@ -3614,7 +3772,11 @@ UHoudiniPublicAPIAssetWrapper::FindRampPointData(
 				// Get all points
 				OutPointData.Reserve(ColorRampParam->CachedPoints.Num());
 				const bool bAllowShrinking = false;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
+				OutPointData.SetNum(0, bAllowShrinking ? EAllowShrinking::Yes : EAllowShrinking::No);
+#else
 				OutPointData.SetNum(0, bAllowShrinking);
+#endif
 				for (UHoudiniParameterRampColorPoint* const RampPoint : ColorRampParam->CachedPoints)
 				{
 					const bool bIsPointData = true;
@@ -3625,7 +3787,11 @@ UHoudiniPublicAPIAssetWrapper::FindRampPointData(
 			{
 				OutPointData.Reserve(1);
 				const bool bAllowShrinking = false;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
+				OutPointData.SetNum(0, bAllowShrinking ? EAllowShrinking::Yes : EAllowShrinking::No);
+#else
 				OutPointData.SetNum(0, bAllowShrinking);
+#endif
 
 				const bool bIsPointData = true;
 				OutPointData.Add(TPair<UObject*, bool>(ColorRampParam->CachedPoints[InIndex], bIsPointData));
@@ -3638,7 +3804,7 @@ UHoudiniPublicAPIAssetWrapper::FindRampPointData(
 	{
 		TSet<int32> InstanceIndexesPendingDelete;
 		int32 NumInsertOps = 0;
-		TArray<UHoudiniParameterRampModificationEvent*>& ModificationEvents = FloatRampParam ? FloatRampParam->ModificationEvents : ColorRampParam->ModificationEvents;
+		TArray<TObjectPtr<UHoudiniParameterRampModificationEvent>>& ModificationEvents = FloatRampParam ? FloatRampParam->ModificationEvents : ColorRampParam->ModificationEvents;
 		for (UHoudiniParameterRampModificationEvent const* const Event : ModificationEvents)
 		{
 			if (!IsValid(Event))
@@ -3661,7 +3827,11 @@ UHoudiniPublicAPIAssetWrapper::FindRampPointData(
 		else
 			OutPointData.Reserve(1);
 		const bool bAllowShrinking = false;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
+		OutPointData.SetNum(0, bAllowShrinking ? EAllowShrinking::Yes : EAllowShrinking::No);
+#else
 		OutPointData.SetNum(0, bAllowShrinking);
+#endif
 		
 		if (bFetchAllPoints || InIndex < NumActivePointsInArray)
 		{
@@ -3905,7 +4075,7 @@ bool UHoudiniPublicAPIAssetWrapper::SetRampParameterPointValue(
 
 			// Update the ramp's widget if it is currently visible/selected
 			const bool bForceFullUpdate = true;
-			FHoudiniEngineUtils::UpdateEditorProperties(Param, bForceFullUpdate);
+			FHoudiniEngineUtils::UpdateEditorProperties(bForceFullUpdate);
 		}
 		else
 		{
@@ -4171,7 +4341,7 @@ UHoudiniPublicAPIAssetWrapper::FindValidHoudiniNodeInputParameter(const FName& I
 		UHoudiniInput* const Input = HAC->GetInputAt(Index);
 		if (!IsValid(Input))
 			continue;
-		if (Input->IsObjectPathParameter() && Input->GetName() == InputParameterName)
+		if (Input->IsObjectPathParameter() && Input->GetInputName() == InputParameterName)
 			return Input;
 	}
 
@@ -4195,7 +4365,7 @@ UHoudiniPublicAPIAssetWrapper::FindValidHoudiniNodeInputParameter(const FName& I
 		UHoudiniInput const* const Input = HAC->GetInputAt(Index);
 		if (!IsValid(Input))
 			continue;
-		if (Input->IsObjectPathParameter() && Input->GetName() == InputParameterName)
+		if (Input->IsObjectPathParameter() && Input->GetInputName() == InputParameterName)
 			return Input;
 	}
 
@@ -4218,23 +4388,14 @@ UHoudiniPublicAPIAssetWrapper::CreateAndPopulateAPIInput(const UHoudiniInput* In
 		case EHoudiniInputType::Curve:
 			APIInputClass = UHoudiniPublicAPICurveInput::StaticClass();
 			break;
-		case EHoudiniInputType::Asset:
-			APIInputClass = UHoudiniPublicAPIAssetInput::StaticClass();
-			break;
+
 		case EHoudiniInputType::World:
 			APIInputClass = UHoudiniPublicAPIWorldInput::StaticClass();
 			break;
-		case EHoudiniInputType::Landscape:
-			APIInputClass = UHoudiniPublicAPILandscapeInput::StaticClass();
-			break;
-		case EHoudiniInputType::Skeletal:
-			// Not yet implemented
-			SetErrorMessage(FString::Printf(TEXT("GetInputAtIndex: Input type not yet implemented %d"), InputType));
-			return false;
-		case EHoudiniInputType::GeometryCollection:
-			APIInputClass = UHoudiniPublicAPIGeometryCollectionInput::StaticClass();
-			break;
+
+		// Deprecated input types
 		case EHoudiniInputType::Invalid:
+		default:
 			SetErrorMessage(FString::Printf(TEXT("GetInputAtIndex: Invalid input type %d"), InputType));
 			return false;
 	}
@@ -4308,4 +4469,50 @@ UHoudiniPublicAPIAssetWrapper::GetValidTOPNodeByPathWithError(
 	OutNodeIndex = NodeIndex;
 	OutNode = Node;
 	return true;
+}
+
+void
+UHoudiniPublicAPIAssetWrapper::ProcessComponentSynchronous_Implementation()
+{
+	UHoudiniAssetComponent* HAC = nullptr;
+	if (!GetValidHoudiniAssetComponentWithError(HAC))
+		return;
+
+	if (!FHoudiniEngine::Get().IsCookingEnabled())
+		return;
+
+	// Node Sync component cant be processed
+	if (HAC->IsA<UHoudiniNodeSyncComponent>())
+		return;
+
+	FHoudiniEngineManager* HEM = FHoudiniEngine::Get().GetHoudiniEngineManager();
+	if (!HEM)
+		return;
+
+	bool bIsStillProcessing = true;
+	while (bIsStillProcessing)
+	{
+		EHoudiniAssetState CurrentState = HAC->GetAssetState();
+		if (CurrentState == EHoudiniAssetState::NeedInstantiation)
+		{
+			// We can exit here.
+			bIsStillProcessing = false;
+		}
+		else if (CurrentState == EHoudiniAssetState::None)
+		{
+			// When reaching the none state - we want to process the component
+			// one last time in case some changes trigger an update/cook
+			HEM->ProcessComponent(HAC);
+			if (HAC->GetAssetState() == EHoudiniAssetState::None)
+			{
+				// The component is not active anymore - we can return
+				bIsStillProcessing = false;
+			}
+		}
+		else
+		{
+			// Keep processing the component until we reach an inactive state
+			HEM->ProcessComponent(HAC);
+		}
+	}
 }

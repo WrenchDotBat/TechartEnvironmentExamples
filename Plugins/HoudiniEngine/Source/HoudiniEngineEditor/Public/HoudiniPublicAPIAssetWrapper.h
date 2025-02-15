@@ -415,6 +415,19 @@ public:
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category="Houdini|Public API")
 	bool IsAutoCookingEnabled() const;
 
+
+	/**
+	 * Enable or disable DoNotGenerateOutput
+	 * @param bInSetEnabled Whether or not to enable "Do Not Generate Outputs"
+	 * @return true if the value was changed.
+	 */
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category="Houdini|Public API")
+	bool SetDoNotGenerateOutputs(const bool bInSetEnabled);
+
+	/** Returns true if "Do Not Generate Outputs" is enabled for this instantiated asset. */
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category="Houdini|Public API")
+	bool IsDoNotGenerateOutputsEnabled() const;
+
 	/**
 	 * Enable or disable triggering of an auto-cook on parameter/input changes.
 	 * @param bInSetEnabled Whether or not to trigger an auto-cook on parameter/input changes.
@@ -548,6 +561,13 @@ public:
 	 */
 	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category="Houdini|Public API")
 	bool GetReplacePreviousBake() const;
+
+	/**
+	 * Gets all generated Actors which are the result of a bake.
+	 * @return array of scene actors from bake action.
+	*/
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category="Houdini|Public API")
+	TArray<AActor*> GetBakedOutputActors();
 
 	// Parameters
 
@@ -1315,6 +1335,14 @@ public:
 	bool GetPDGBakingReplacementMode(EPDGBakePackageReplaceModeOption& OutBakingReplacementMode) const;
 
 	/**
+	 * Helper function for manually processing the wrapped component until it reaches a blocking state
+	 * This means that instantiating, cooking and processing of the HDA will be blocking, as the function
+	 * only returns once all processing is finished.
+	 */
+	UFUNCTION(BlueprintNativeEvent, BlueprintCallable, Category="Houdini|Public API")
+	void ProcessComponentSynchronous();
+
+	/**
 	 * Getter for the OnPreInstantiationDelegate, broadcast before the HDA is instantiated. The HDA's default parameter
 	 * definitions are available, but the node has not yet been instantiated in HAPI/Houdini Engine. Parameter values
 	 * can be set at this point.
@@ -1547,17 +1575,22 @@ protected:
 		int32& OutNodeIndex,
 		UTOPNode*& OutNode) const;
 
+	//
+	// TSoftObjectPtr seems to potentially cause race conditions when running the UE test framework
+	// Switching to TWeakObjectPtr seem to solve the issue:
+	//
+
 	/** The wrapped Houdini Asset object (not the uasset, an AHoudiniAssetActor or UHoudiniAssetComponent). */
 	UPROPERTY(BlueprintReadOnly, Category="Houdini|Public API")
-	TSoftObjectPtr<UObject> HoudiniAssetObject;
+	TWeakObjectPtr<UObject> HoudiniAssetObject;
 
 	/** The wrapped AHoudiniAssetActor (derived from HoudiniAssetObject when calling WrapHoudiniAssetObject()). */
 	UPROPERTY(BlueprintReadOnly, Category="Houdini|Public API")
-	TSoftObjectPtr<AHoudiniAssetActor> CachedHoudiniAssetActor;
+	TWeakObjectPtr<AHoudiniAssetActor> CachedHoudiniAssetActor;
 
 	/** The wrapped UHoudiniAssetComponent (derived from HoudiniAssetObject when calling WrapHoudiniAssetObject()). */
 	UPROPERTY(BlueprintReadOnly, Category="Houdini|Public API")
-	TSoftObjectPtr<UHoudiniAssetComponent> CachedHoudiniAssetComponent;
+	TWeakObjectPtr<UHoudiniAssetComponent> CachedHoudiniAssetComponent;
 
 	/**
 	 * Delegate that is broadcast when entering the PreInstantiation state: the HDA's default parameter definitions are

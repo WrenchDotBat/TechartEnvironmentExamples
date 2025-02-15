@@ -43,7 +43,10 @@
 #include "LandscapeSplineActor.h"
 #include "LandscapeSplineControlPoint.h"
 #include "LandscapeSplineSegment.h"
+#include "Animation/Skeleton.h"
 #include "Templates/Tuple.h"
+#include "HoudiniFoliageUtils.h"
+#include "PhysicsEngine/PhysicsAsset.h"
 
 
 FHoudiniMaterialIdentifier::FHoudiniMaterialIdentifier(
@@ -98,11 +101,11 @@ UHoudiniLandscapePtr::UHoudiniLandscapePtr(class FObjectInitializer const& Initi
 bool
 UHoudiniLandscapeSplinesOutput::GetLayerSegments(const FName InEditLayer, TArray<ULandscapeSplineSegment*>& OutSegments) const
 {
-	UHoudiniLandscapeSplineTargetLayerOutput* const* const LayerOutputPtr = LayerOutputs.Find(InEditLayer);
+	const TObjectPtr<UHoudiniLandscapeSplineTargetLayerOutput> * LayerOutputPtr = LayerOutputs.Find(InEditLayer);
 	if (!LayerOutputPtr)
 		return false;
 
-	UHoudiniLandscapeSplineTargetLayerOutput* const LayerOutput = *LayerOutputPtr;
+	UHoudiniLandscapeSplineTargetLayerOutput* LayerOutput = LayerOutputPtr->Get();
 	if (!IsValid(LayerOutput))
 		return false;
 
@@ -112,7 +115,7 @@ UHoudiniLandscapeSplinesOutput::GetLayerSegments(const FName InEditLayer, TArray
 
 
 void
-UHoudiniLandscapeSplinesOutput::Clear(const bool bInClearTempLayers)
+UHoudiniLandscapeSplinesOutput::Clear(bool bInClearTempLayers)
 {
 	// Delete the splines (segments and control points)
 	FHoudiniLandscapeRuntimeUtils::DestroyLandscapeSplinesSegmentsAndControlPoints(this);
@@ -426,6 +429,7 @@ FHoudiniBakedOutputObject::FHoudiniBakedOutputObject()
 	, ActorBakeName(NAME_None)
 	, BakedObject()
 	, BakedComponent()
+	, BakedSkeleton()
 {
 }
 
@@ -435,6 +439,7 @@ FHoudiniBakedOutputObject::FHoudiniBakedOutputObject(AActor* InActor, FName InAc
 	, ActorBakeName(InActorBakeName)
 	, BakedObject(FSoftObjectPath(InBakeObject).ToString())
 	, BakedComponent(FSoftObjectPath(InBakedComponent).ToString())
+	, BakedSkeleton()
 {
 }
 
@@ -533,6 +538,116 @@ FHoudiniBakedOutputObject::GetLandscapeLayerInfoIfValid(const FName& InLayerName
 	return Cast<ULandscapeLayerInfoObject>(Object);
 }
 
+ALandscape*
+FHoudiniBakedOutputObject::GetLandscapeIfValid(bool bInTryLoad) const
+{
+    const FSoftObjectPath LandscapePath(Landscape);
+
+    if (!LandscapePath.IsValid())
+        return nullptr;
+
+    UObject* Object = LandscapePath.ResolveObject();
+    if (!Object && bInTryLoad)
+        Object = LandscapePath.TryLoad();
+
+    if (!IsValid(Object))
+        return nullptr;
+
+    return Cast<ALandscape>(Object);
+}
+
+USkeleton*
+FHoudiniBakedOutputObject::GetBakedSkeletonIfValid(bool bInTryLoad) const
+{
+	const FSoftObjectPath SkeletonPath(BakedSkeleton);
+
+	if (!SkeletonPath.IsValid())
+		return nullptr;
+	
+	UObject* Object = SkeletonPath.ResolveObject();
+	if (!Object && bInTryLoad)
+		Object = SkeletonPath.TryLoad();
+
+	if (!IsValid(Object))
+		return nullptr;
+
+	return Cast<USkeleton>(Object);
+}
+
+UPhysicsAsset*
+FHoudiniBakedOutputObject::GetBakedPhysicsAssetIfValid(bool bInTryLoad) const
+{
+	const FSoftObjectPath PhyscsAssetPath(BakedPhysicsAsset);
+
+	if (!PhyscsAssetPath.IsValid())
+		return nullptr;
+
+	UObject* Object = PhyscsAssetPath.ResolveObject();
+	if (!Object && bInTryLoad)
+		Object = PhyscsAssetPath.TryLoad();
+
+	if (!IsValid(Object))
+		return nullptr;
+
+	return Cast<UPhysicsAsset>(Object);
+}
+
+TArray<AActor*>
+FHoudiniBakedOutputObject::GetFoliageActorsIfValid(bool bInTryLoad) const
+{
+	TArray<AActor*> ValidActors;
+
+    for (const FString& ActorPathString : FoliageActors)
+    {
+        FSoftObjectPath ActorPath(ActorPathString);
+
+        if (!ActorPath.IsValid())
+            continue;
+
+        UObject* ResolvedObject = ActorPath.ResolveObject();
+        if (!ResolvedObject && bInTryLoad)
+            ResolvedObject = ActorPath.TryLoad();
+
+        if (!IsValid(ResolvedObject))
+            continue;
+
+        AActor* ResolvedActor = Cast<AActor>(ResolvedObject);
+        if (ResolvedActor)
+        {
+            ValidActors.Add(ResolvedActor);
+        }
+    }
+
+    return ValidActors;
+}
+
+TArray<AActor*> FHoudiniBakedOutputObject::GetInstancedActorsIfValid(bool bInTryLoad) const
+{
+    TArray<AActor*> ValidActors;
+
+    for (const FString& ActorPathString : InstancedActors)
+    {
+        FSoftObjectPath ActorPath(ActorPathString);
+
+        if (!ActorPath.IsValid())
+            continue;
+
+        UObject* ResolvedObject = ActorPath.ResolveObject();
+        if (!ResolvedObject && bInTryLoad)
+            ResolvedObject = ActorPath.TryLoad();
+
+        if (!IsValid(ResolvedObject))
+            continue;
+
+        AActor* ResolvedActor = Cast<AActor>(ResolvedObject);
+        if (ResolvedActor)
+        {
+            ValidActors.Add(ResolvedActor);
+        }
+    }
+
+    return ValidActors;
+}
 
 UHoudiniOutput::UHoudiniOutput(const FObjectInitializer & ObjectInitializer)
 	: Super(ObjectInitializer)
@@ -569,52 +684,6 @@ void
 UHoudiniOutput::PostLoad()
 {
 	Super::PostLoad();
-
-	// If the deprecated AssignementMaterials map is not empty and AssignementMaterialsById is empty, then migrate
-	// the data from AssignementMaterials_DEPRECATED to AssignementMaterialsById.
-	if (AssignementMaterials_DEPRECATED.Num() > 0 && AssignmentMaterialsById.Num() <= 0)
-	{
-		for (const auto& MaterialEntry : AssignementMaterials_DEPRECATED)
-		{
-			const FString& MatPath = MaterialEntry.Key;
-			UMaterialInterface* const Material = MaterialEntry.Value;
-
-			// We are simply using the material path only here instead of trying to determine whether an instance
-			// was created or what the parameters were: the old map didn't encode that information in the key, and
-			// was used before we could generate multiple instances (with different parameters) from one material.
-			// An assumption we make is that if we cannot load the material from MatPath, then MathPath represents
-			// a Houdini material node path
-			UMaterialInterface const* const MaterialFromMatPath = Cast<UMaterialInterface>(
-				StaticLoadObject(UMaterialInterface::StaticClass(), nullptr, *MatPath, nullptr, LOAD_NoWarn, nullptr));
-			const bool bIsLikelyHoudiniMaterial = MaterialFromMatPath == nullptr;
-			const FHoudiniMaterialIdentifier MatId(MatPath, bIsLikelyHoudiniMaterial);
-			AssignmentMaterialsById.Add(MatId, Material);
-		}
-	}
-	AssignementMaterials_DEPRECATED.Empty();
-
-	// If the deprecated ReplacementMaterials map is not empty and ReplacementMaterialsById is empty, then migrate
-	// the data from ReplacementMaterials_DEPRECATED to ReplacementMaterialsById.
-	if (ReplacementMaterials_DEPRECATED.Num() > 0 && ReplacementMaterialsById.Num() <= 0)
-	{
-		for (const auto& MaterialEntry : ReplacementMaterials_DEPRECATED)
-		{
-			const FString& MatPath = MaterialEntry.Key;
-			UMaterialInterface* const Material = MaterialEntry.Value;
-
-			// We are simply using the material path only here instead of trying to determine whether an instance
-			// was created or what the parameters were: the old map didn't encode that information in the key, and
-			// was used before we could generate multiple instances (with different parameters) from one material.
-			// An assumption we make is that if we cannot load the material from MatPath, then MathPath represents
-			// a Houdini material node path
-			UMaterialInterface const* const MaterialFromMatPath = Cast<UMaterialInterface>(
-				StaticLoadObject(UMaterialInterface::StaticClass(), nullptr, *MatPath, nullptr, LOAD_NoWarn, nullptr));
-			const bool bIsLikelyHoudiniMaterial = MaterialFromMatPath == nullptr;
-			const FHoudiniMaterialIdentifier MatId(MatPath, bIsLikelyHoudiniMaterial);
-			ReplacementMaterialsById.Add(MatId, Material);
-		}
-	}
-	ReplacementMaterials_DEPRECATED.Empty();
 }
 
 
@@ -718,9 +787,6 @@ UHoudiniOutput::GetBounds() const
 
 	case EHoudiniOutputType::LandscapeSpline:
 	{
-		if (!FHoudiniEngineRuntimeUtils::IsLandscapeSplineOutputEnabled())
-			break;
-
 		for (const auto& CurPair : OutputObjects)
 		{
 			const FHoudiniOutputObject& CurObj = CurPair.Value;
@@ -931,6 +997,44 @@ UHoudiniOutput::HeightfieldMatch(const FHoudiniGeoPartObject& InHGPO, const bool
 	return false;
 }
 
+const bool UHoudiniOutput::GeoMatch(const FHoudiniGeoPartObject& InHGPO) const
+{
+	for (auto& currentHGPO : HoudiniGeoPartObjects)
+	{
+		// Asset/Object/Geo IDs should match
+		if (currentHGPO.AssetId != InHGPO.AssetId
+			|| currentHGPO.ObjectId != InHGPO.ObjectId
+			|| currentHGPO.GeoId != InHGPO.GeoId)
+		{
+			continue;
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
+const bool UHoudiniOutput::InstancerNameMatch(const FHoudiniGeoPartObject& InHGPO) const
+{
+	for (auto& currentHGPO : HoudiniGeoPartObjects)
+	{
+		// Asset/Object/Geo IDs should match
+		if (currentHGPO.AssetId != InHGPO.AssetId
+			|| currentHGPO.ObjectId != InHGPO.ObjectId
+			|| currentHGPO.GeoId != InHGPO.GeoId
+			|| currentHGPO.InstancerName != InHGPO.InstancerName
+			)
+		{
+			continue;
+		}
+
+		return true;
+	}
+
+	return false;
+}
+
 void 
 UHoudiniOutput::MarkAllHGPOsAsStale(const bool& bInStale)
 {
@@ -962,6 +1066,9 @@ UHoudiniOutput::UpdateOutputType()
 	int32 InstancerCount = 0;
 	int32 DataTableCount = 0;
 	int32 LandscapeSplineCount = 0;
+	int32 AnimSequenceCount = 0;
+	int32 SkeletonCount = 0;
+
 	for (auto& HGPO : HoudiniGeoPartObjects)
 	{
 		switch (HGPO.Type)
@@ -984,6 +1091,15 @@ UHoudiniOutput::UpdateOutputType()
 		case EHoudiniPartType::LandscapeSpline:
 			LandscapeSplineCount++;
 			break;
+		case EHoudiniPartType::MotionClip:
+			AnimSequenceCount++;
+			break;
+		case EHoudiniPartType::SkeletalMeshPose:
+			SkeletonCount++;
+			break;
+		case EHoudiniPartType::SkeletalMeshShape:
+			SkeletonCount++;
+			break;
 		default:
 		case EHoudiniPartType::Invalid:
 			break;
@@ -994,6 +1110,16 @@ UHoudiniOutput::UpdateOutputType()
 	{
 		// If we have a volume, we're a landscape
 		Type = EHoudiniOutputType::Landscape;
+	}
+	else if (AnimSequenceCount > 0)
+	{
+		// Anim sequence take precedence over instancers and meshes since it contains both
+		Type = EHoudiniOutputType::AnimSequence;
+	}
+	else if (SkeletonCount > 0)
+	{
+		// Skeletal Meshes take precedence over instancers and meshes since it contains both
+		Type = EHoudiniOutputType::Skeletal;
 	}
 	else if (InstancerCount > 0)
 	{
@@ -1213,3 +1339,114 @@ void FHoudiniClearedEditLayers::Add(FString& EditLayer, FString& TargetLayer)
 
 	EditLayers[EditLayer].TargetLayers.Add(TargetLayer);
 };
+
+void DestroyComponent(UObject * Component)
+{
+	if (Component == nullptr || !IsValid(Component))
+		return;
+
+	USceneComponent* SceneComponent = Cast<USceneComponent>(Component);
+	if (IsValid(SceneComponent))
+	{
+		// Remove from the HoudiniAssetActor
+		if (SceneComponent->GetOwner())
+			SceneComponent->GetOwner()->RemoveOwnedComponent(SceneComponent);
+
+		SceneComponent->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
+		SceneComponent->UnregisterComponent();
+		SceneComponent->DestroyComponent();
+	}
+}
+
+void FHoudiniOutputObject::DestroyCookedData()
+{
+	//--------------------------------------------------------------------------------------------------------------------
+	// Destroy all components
+	//--------------------------------------------------------------------------------------------------------------------
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniOutputObject::DestroyCookedData);
+
+	TArray<UObject*> ComponentsToDestroy;
+
+	for (auto Component : OutputComponents)
+	{
+		if (IsValid(Component))
+		{
+			ComponentsToDestroy.Add(Component);
+		}
+	}
+	OutputComponents.Empty();
+
+	if (IsValid(ProxyComponent))
+		ComponentsToDestroy.Add(ProxyComponent);
+
+	ProxyComponent = nullptr;
+
+	for(UObject* Component : ComponentsToDestroy)
+	{
+		USceneComponent* SceneComponent = Cast<USceneComponent>(Component);
+		SceneComponent->DetachFromComponent(FDetachmentTransformRules::KeepRelativeTransform);
+		SceneComponent->UnregisterComponent();
+		SceneComponent->DestroyComponent();
+	}
+
+	//--------------------------------------------------------------------------------------------------------------------
+	// Remove spline output
+	//--------------------------------------------------------------------------------------------------------------------
+
+	// Destroy any segments that we previously created
+	UHoudiniLandscapeSplinesOutput* SplinesOutputObject = Cast<UHoudiniLandscapeSplinesOutput>(this->OutputObject);
+	if (IsValid(SplinesOutputObject))
+	{
+		SplinesOutputObject->Clear();
+	}
+
+	//--------------------------------------------------------------------------------------------------------------------
+	// Destroy all objects
+	//--------------------------------------------------------------------------------------------------------------------
+
+	if (IsValid(OutputObject))
+	{
+#if WITH_EDITOR
+		UAssetEditorSubsystem* AssetEditorSubsystem = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+		AssetEditorSubsystem->CloseAllEditorsForAsset(OutputObject);
+#endif
+	}
+	OutputObject = nullptr;
+
+	ProxyObject = nullptr;
+
+	//--------------------------------------------------------------------------------------------------------------------
+	// Remove Foliage creating during cooking; we just need to move it from the world, and all the instances will be deleted.
+	//--------------------------------------------------------------------------------------------------------------------
+
+	if (IsValid(FoliageType))
+	{
+		FHoudiniFoliageUtils::RemoveFoliageTypeFromWorld(World, FoliageType);
+	}
+
+	//--------------------------------------------------------------------------------------------------------------------
+	// Remove actors
+	//--------------------------------------------------------------------------------------------------------------------
+
+	for (auto Actor : OutputActors)
+	{
+		if (Actor.IsValid())
+		{
+			Actor->DetachFromActor(FDetachmentTransformRules::KeepWorldTransform);
+			Actor->Destroy();
+		}
+	}
+	OutputActors.Empty();
+}
+
+
+void UHoudiniOutput::DestroyCookedData()
+{
+	TRACE_CPUPROFILER_EVENT_SCOPE(UHoudiniOutput::DestroyCookedData);
+	for (auto It : OutputObjects)
+	{
+		FHoudiniOutputObject* FoundOutputObject = &It.Value;
+		FoundOutputObject->DestroyCookedData();
+	}
+	OutputObjects.Empty();
+}

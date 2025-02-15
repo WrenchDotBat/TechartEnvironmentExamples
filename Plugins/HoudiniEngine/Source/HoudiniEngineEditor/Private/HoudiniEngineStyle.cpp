@@ -34,6 +34,7 @@
 #include "Styling/SlateStyleRegistry.h"
 #include "Styling/SlateTypes.h"
 #include "SlateOptMacros.h"
+#include "Styling/StyleColors.h"
 
 #define LOCTEXT_NAMESPACE HOUDINI_LOCTEXT_NAMESPACE 
 
@@ -160,7 +161,16 @@ FHoudiniEngineStyle::Initialize()
 	FString ViewportSyncOffIcon = IconsDir + TEXT("viewport_sync_off16x16.png");
 	FString ViewportSyncUnrealIcon = IconsDir + TEXT("viewport_sync_unreal16x16.png");
 	FString NodeSyncIcon = IconsDir + TEXT("icon_houdini_logo_16.png");
+	FString HoudiniToolsIcon = IconsDir + TEXT("icon_houdini_logo_16.png");
+	FString CurveClosedIcon = IconsDir + TEXT("curve_closed16x16.png");
+	FString CurveNotClosedIcon = IconsDir + TEXT("curve_not_closed16x16.png");
+	FString CurveReversedIcon = IconsDir + TEXT("curve_reversed16x16.png");
+	FString CurveNotReversedIcon = IconsDir + TEXT("curve_not_reversed16x16.png");
 
+	FString ContentExampleGitIcon = IconsDir + TEXT("icon_houdini_logo_16.png");
+	FString ContentExampleBrowseToIcon = IconsDir + TEXT("icon_houdini_logo_16.png");
+		//_GetEditorStyle().GetBrush("SystemWideCommands.FindInContentBrowser.Small")->GetResourceName().ToString();
+	
 	FString InfoIcon = IconsDir + TEXT("icon_hengine_logo_16.png");
 	FString SettingsIcon = _GetEditorStyle().GetBrush("Launcher.EditSettings")->GetResourceName().ToString();
 
@@ -180,9 +190,11 @@ FHoudiniEngineStyle::Initialize()
 	StyleSet->Set("HoudiniEngine._ViewportSyncHoudini", new FSlateImageBrush(ViewportSyncHoudiniIcon, Icon16x16));
 
 	StyleSet->Set("HoudiniEngine._OpenNodeSync", new FSlateImageBrush(NodeSyncIcon, Icon16x16));
+	StyleSet->Set("HoudiniEngine._OpenHoudiniTools", new FSlateImageBrush(HoudiniToolsIcon, Icon16x16));
 
 	StyleSet->Set("HoudiniEngine._InstallInfo", new FSlateImageBrush(InfoIcon, Icon16x16));
 	StyleSet->Set("HoudiniEngine._PluginSettings", new FSlateImageBrush(SettingsIcon, Icon16x16));
+	StyleSet->Set("HoudiniEngine._PluginEditorSettings", new FSlateImageBrush(SettingsIcon, Icon16x16));
 
 	StyleSet->Set("HoudiniEngine._OpenInHoudini", new FSlateImageBrush(OpenInHIcon, Icon16x16));
 	StyleSet->Set("HoudiniEngine._SaveHIPFile", new FSlateImageBrush(SaveToHipIcon, Icon16x16));
@@ -191,6 +203,9 @@ FHoudiniEngineStyle::Initialize()
 	StyleSet->Set("HoudiniEngine._OnlineDoc", new FSlateImageBrush(OnlineHelpIcon, Icon16x16));
 	StyleSet->Set("HoudiniEngine._OnlineForum", new FSlateImageBrush(OnlineForumIcon, Icon16x16));
 	StyleSet->Set("HoudiniEngine._ReportBug", new FSlateImageBrush(ReportBugIcon, Icon16x16));
+
+	StyleSet->Set("HoudiniEngine._ContentExampleGit", new FSlateImageBrush(ContentExampleGitIcon, Icon16x16));
+	StyleSet->Set("HoudiniEngine._ContentExampleBrowseTo", new FSlateImageBrush(ContentExampleBrowseToIcon, Icon16x16));
 
 	StyleSet->Set("HoudiniEngine._CookAll", new FSlateImageBrush(CookAllIcon, Icon16x16));
 	StyleSet->Set("HoudiniEngine._CookSelected", new FSlateImageBrush(CookSelIcon, Icon16x16));
@@ -208,52 +223,13 @@ FHoudiniEngineStyle::Initialize()
 
 	StyleSet->Set("HoudiniEngine._Reset", new FSlateImageBrush(ResetIcon, Icon16x16));
 	StyleSet->Set("HoudiniEngine.DigitalAsset", new FSlateImageBrush(DigitalAssetIcon, Icon16x16));
+	StyleSet->Set("HoudiniEngine.AssetHelp", new FSlateImageBrush(AssetHelpIcon, Icon16x16));
 	StyleSet->Set("HoudiniEngine.PDGLink", new FSlateImageBrush(PDGLinkIcon, Icon16x16));
 
-	/*
-	FString StopIcon = FEditorStyle::GetBrush("PropertyWindow.Button_Clear")->GetResourceName().ToString();
-	FString RestartIcon = FEditorStyle::GetBrush("Tutorials.Browser.RestartButton")->GetResourceName().ToString();
-	FString InfoIcon = FEditorStyle::GetBrush("Icons.Info")->GetResourceName().ToString();
-	FString SettingsIcon = FEditorStyle::GetBrush("Launcher.EditSettings")->GetResourceName().ToString();
-	FString ClearIcon = FEditorStyle::GetBrush("PropertyWindow.Button_Delete")->GetResourceName().ToString();
-	FString HelpIcon = FEditorStyle::GetBrush("Icons.Help")->GetResourceName().ToString();
-	FString WarningIcon = FEditorStyle::GetBrush("Icons.Warning")->GetResourceName().ToString();
-	FString BPIcon = FEditorStyle::GetBrush("PropertyWindow.Button_CreateNewBlueprint")->GetResourceName().ToString();
-	FString PauseIcon = FEditorStyle::GetBrush("Profiler.Pause")->GetResourceName().ToString();
-
-	StyleSet->Set("HoudiniEngine._CreateSession", new FSlateImageBrush(IconsDir + TEXT("icon_houdini_logo_16.png"), Icon16x16));
-	StyleSet->Set("HoudiniEngine._ConnectSession", new FSlateImageBrush(IconsDir + TEXT("icon_houdini_logo_16.png"), Icon16x16));
-	StyleSet->Set("HoudiniEngine._StopSession", new FSlateImageBrush(StopIcon, Icon16x16));
-	StyleSet->Set("HoudiniEngine._RestartSession", new FSlateImageBrush(RestartIcon, Icon16x16));
-	StyleSet->Set("HoudiniEngine._OpenSessionSync", new FSlateImageBrush(IconsDir + TEXT("icon_houdini_logo_16.png"), Icon16x16));
-	StyleSet->Set("HoudiniEngine._CloseSessionSync", new FSlateImageBrush(StopIcon, Icon16x16));
-
-	StyleSet->Set("HoudiniEngine._InstallInfo", new FSlateImageBrush(InfoIcon, Icon16x16));
-	StyleSet->Set("HoudiniEngine._PluginSettings", new FSlateImageBrush(SettingsIcon, Icon16x16));
-
-
-	StyleSet->Set("HoudiniEngine._OpenInHoudini", new FSlateImageBrush(IconsDir + TEXT("icon_houdini_logo_16.png"), Icon16x16));
-	StyleSet->Set("HoudiniEngine._SaveHIPFile", new FSlateImageBrush(IconsDir + TEXT("icon_houdini_logo_16.png"), Icon16x16));
-	StyleSet->Set("HoudiniEngine._CleanUpTempFolder", new FSlateImageBrush(IconsDir + TEXT("icon_houdini_logo_16.png"), Icon16x16));
-
-	StyleSet->Set("HoudiniEngine._OnlineDoc", new FSlateImageBrush(HelpIcon, Icon16x16));
-	StyleSet->Set("HoudiniEngine._OnlineForum", new FSlateImageBrush(InfoIcon, Icon16x16));
-	StyleSet->Set("HoudiniEngine._ReportBug", new FSlateImageBrush(WarningIcon, Icon16x16));
-
-	StyleSet->Set("HoudiniEngine._CookAll", new FSlateImageBrush(ResourcesDir + TEXT("hengine_recook_icon.png"), Icon16x16));
-	StyleSet->Set("HoudiniEngine._CookSelected", new FSlateImageBrush(ResourcesDir + TEXT("hengine_recook_icon.png"), Icon16x16));
-
-	StyleSet->Set("HoudiniEngine._BakeSelected", new FSlateImageBrush(IconsDir + TEXT("icon_houdini_logo_16.png"), Icon16x16));
-	StyleSet->Set("HoudiniEngine._BakeAll", new FSlateImageBrush(IconsDir + TEXT("icon_houdini_logo_16.png"), Icon16x16));
-
-	StyleSet->Set("HoudiniEngine._RebuildAll", new FSlateImageBrush(ResourcesDir + TEXT("hengine_reload_icon.png"), Icon16x16));
-	StyleSet->Set("HoudiniEngine._RebuildSelected", new FSlateImageBrush(ResourcesDir + TEXT("hengine_reload_icon.png"), Icon16x16));
-
-	StyleSet->Set("HoudiniEngine._RefineAll", new FSlateImageBrush(IconsDir + TEXT("icon_houdini_logo_16.png"), Icon16x16));
-	StyleSet->Set("HoudiniEngine._RefineSelected", new FSlateImageBrush(IconsDir + TEXT("icon_houdini_logo_16.png"), Icon16x16));
-
-	StyleSet->Set("HoudiniEngine._PauseAssetCooking", new FSlateImageBrush(IconsDir + TEXT("icon_houdini_logo_16.png"), Icon16x16));
-	*/
+	StyleSet->Set("HoudiniEngine._CurveClosed", new FSlateImageBrush(CurveClosedIcon, Icon16x16));
+	StyleSet->Set("HoudiniEngine._CurveNotClosed", new FSlateImageBrush(CurveNotClosedIcon, Icon16x16));
+	StyleSet->Set("HoudiniEngine._CurveReversed", new FSlateImageBrush(CurveReversedIcon, Icon16x16));
+	StyleSet->Set("HoudiniEngine._CurveNotReversed", new FSlateImageBrush(CurveNotReversedIcon, Icon16x16));
 
 	// We need some colors from Editor Style & this is the only way to do this at the moment
 	const FSlateColor DefaultForeground = _GetEditorStyle().GetSlateColor("DefaultForeground");
@@ -309,6 +285,24 @@ FHoudiniEngineStyle::Initialize()
 	StyleSet->Set("HoudiniEngine.ThumbnailShadow", new BOX_BRUSH("ContentBrowser/ThumbnailShadow", FMargin(4.0f / 64.0f)));
 	StyleSet->Set("HoudiniEngine.ThumbnailBackground", new IMAGE_BRUSH("Common/ClassBackground_64x", FVector2D(64.f, 64.f), FLinearColor(0.75f, 0.75f, 0.75f, 1.0f)));
 
+	const FButtonStyle SimpleButton = FButtonStyle()
+		.SetNormal(FSlateNoResource())
+		.SetHovered(FSlateNoResource())
+		.SetPressed(FSlateNoResource())
+		// .SetHovered(FSlateRoundedBoxBrush(FStyleColors::Dropdown, 4.0f))
+		// .SetPressed(FSlateRoundedBoxBrush(FStyleColors::Dropdown, 4.0f))
+		.SetDisabled(FSlateNoResource())
+		.SetNormalForeground(FStyleColors::Foreground)
+		// .SetHoveredForeground(FStyleColors::ForegroundHover)
+		// .SetPressedForeground(FStyleColors::ForegroundHover)
+		.SetDisabledForeground(FStyleColors::Foreground)
+		.SetNormalPadding(CoreStyleConstants::ButtonMargins)
+		.SetPressedPadding(CoreStyleConstants::PressedButtonMargins);
+	
+	StyleSet->Set("HoudiniEngine.HelpButton", SimpleButton);
+
+
+	
 	// Register Slate style.
 	FSlateStyleRegistry::RegisterSlateStyle(*StyleSet.Get());
 };

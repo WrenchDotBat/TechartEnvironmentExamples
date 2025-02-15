@@ -58,11 +58,15 @@ UHoudiniRuntimeSettings::UHoudiniRuntimeSettings( const FObjectInitializer & Obj
 {
 	// Session options.
 	SessionType = HRSST_NamedPipe;
+	NumSessions = 1;
 	ServerHost = HAPI_UNREAL_SESSION_SERVER_HOST;
 	ServerPort = HAPI_UNREAL_SESSION_SERVER_PORT;
 	ServerPipeName = HAPI_UNREAL_SESSION_SERVER_PIPENAME;
 	bStartAutomaticServer = HAPI_UNREAL_SESSION_SERVER_AUTOSTART;
 	AutomaticServerTimeout = HAPI_UNREAL_SESSION_SERVER_TIMEOUT;
+
+	SharedMemoryBufferSize = 500;
+	bSharedMemoryBufferCyclic = true;
 
 	bSyncWithHoudiniCook = true;
 	bCookUsingHoudiniTime = true;
@@ -80,9 +84,9 @@ UHoudiniRuntimeSettings::UHoudiniRuntimeSettings( const FObjectInitializer & Obj
 	DefaultTemporaryCookFolder = HAPI_UNREAL_DEFAULT_TEMP_COOK_FOLDER;
 	DefaultBakeFolder = HAPI_UNREAL_DEFAULT_BAKE_FOLDER;
 
-	// Input options
-	bEnableTheReferenceCountedInputSystem = false;
-	
+	// Instances
+	bEnableDeprecatedInstanceVariations = false;
+
 	// Parameter options
 	//bTreatRampParametersAsMultiparms = false;
 
@@ -148,13 +152,12 @@ UHoudiniRuntimeSettings::UHoudiniRuntimeSettings( const FObjectInitializer & Obj
 
 	bPDGAsyncCommandletImportEnabled = false;
 
-	// Legacy settings
-	bEnableBackwardCompatibility = true;
-	bAutomaticLegacyHDARebuild = false;
-
 	// Curve inputs and editable output curves
 	bAddRotAndScaleAttributesOnCurves = false;
 	bUseLegacyInputCurves = true;
+
+	// Houdini Tools
+	HoudiniToolsSearchPath = { TEXT("/Game/HoudiniEngine/Tools") };
 }
 
 UHoudiniRuntimeSettings::~UHoudiniRuntimeSettings()
@@ -263,13 +266,10 @@ UHoudiniRuntimeSettings::PostInitProperties()
 	UpdateSessionUI();
 
 #endif // WITH_EDITOR
-
-	SetPropertyReadOnly(TEXT("CustomHoudiniLocation"), !bUseCustomHoudiniLocation);
 }
 
 
 #if WITH_EDITOR
-
 void
 UHoudiniRuntimeSettings::PostEditChangeProperty(struct FPropertyChangedEvent & PropertyChangedEvent)
 {
@@ -282,26 +282,10 @@ UHoudiniRuntimeSettings::PostEditChangeProperty(struct FPropertyChangedEvent & P
 		return;
 	if (Property->GetName() == TEXT("SessionType"))
 		UpdateSessionUI();
-	else if (Property->GetName() == TEXT("bUseCustomHoudiniLocation"))
-		SetPropertyReadOnly(TEXT("CustomHoudiniLocation"), !bUseCustomHoudiniLocation);
 	else if (Property->GetName() == TEXT("CustomHoudiniLocation"))
 	{
-		FString LibHAPIName = FHoudiniEngineRuntimeUtils::GetLibHAPIName();
-		FString & CustomHoudiniLocationPath = CustomHoudiniLocation.Path;
-		FString LibHAPICustomPath = FString::Printf(TEXT("%s/%s"), *CustomHoudiniLocationPath, *LibHAPIName);
-
-		// If path does not point to libHAPI location, we need to let user know.
-		if (!FPaths::FileExists(LibHAPICustomPath))
-		{
-			FString MessageString = FString::Printf(
-				TEXT("%s was not found in %s"), *LibHAPIName, *CustomHoudiniLocationPath);
-
-			FPlatformMisc::MessageBoxExt(
-				EAppMsgType::Ok, *MessageString,
-				TEXT("Invalid Custom Location Specified, resetting."));
-
-			CustomHoudiniLocationPath = TEXT("");
-		}
+		if (!FHoudiniEngineRuntimeUtils::CheckCustomHoudiniLocation(CustomHoudiniLocation.Path))
+			CustomHoudiniLocation.Path = TEXT("");
 	}
 	else if (Property->GetName() == TEXT("MarshallingLandscapesForceMinMaxValues"))
 	{
@@ -376,6 +360,8 @@ UHoudiniRuntimeSettings::UpdateSessionUI()
 	SetPropertyReadOnly(TEXT("ServerPipeName"), true);
 	SetPropertyReadOnly(TEXT("bStartAutomaticServer"), true);
 	SetPropertyReadOnly(TEXT("AutomaticServerTimeout"), true);
+	SetPropertyReadOnly(TEXT("SharedMemoryBufferSize"), true);
+	SetPropertyReadOnly(TEXT("bSharedMemoryBufferCyclic"), true);
 
 	bool bServerType = false;
 
@@ -392,6 +378,15 @@ UHoudiniRuntimeSettings::UpdateSessionUI()
 	case HRSST_NamedPipe:
 	{
 		SetPropertyReadOnly(TEXT("ServerPipeName"), false);
+		bServerType = true;
+		break;
+	}
+
+	case HRSST_MemoryBuffer:
+	{
+		SetPropertyReadOnly(TEXT("ServerPipeName"), false);
+		SetPropertyReadOnly(TEXT("SharedMemoryBufferSize"), false);
+		SetPropertyReadOnly(TEXT("bSharedMemoryBufferCyclic"), false);
 		bServerType = true;
 		break;
 	}

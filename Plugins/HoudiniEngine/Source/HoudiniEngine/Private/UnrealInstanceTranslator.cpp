@@ -27,6 +27,7 @@
 #include "UnrealInstanceTranslator.h"
 
 #include "HoudiniEngine.h"
+#include "HoudiniEngineAttributes.h"
 #include "HoudiniEngineUtils.h"
 #include "HoudiniEnginePrivatePCH.h"
 #include "UnrealMeshTranslator.h"
@@ -65,20 +66,23 @@ FUnrealInstanceTranslator::HapiCreateInputNodeForInstancer(
 	// Marshall the Static Mesh to Houdini
 	int32 SMNodeId = -1;
 	FString ISMCName = InNodeName + TEXT("_") + ISMC->GetName();
+	FHoudiniEngineUtils::SanitizeHAPIVariableName(ISMCName);
+
 	FUnrealObjectInputHandle SMNodeHandle;
 	bool bSuccess = FUnrealMeshTranslator::HapiCreateInputNodeForStaticMesh(
 		SM,
-		SMNodeId, 
+		SMNodeId,
 		InNodeName,
 		SMNodeHandle,
 		ISMC,
-		bExportLODs, 
+		bExportLODs,
 		bExportSockets,
 		bExportColliders,
-		true, 
 		true,
-		bPreferNaniteFallbackMesh, 
-		bExportMaterialParameters);
+		true,
+		bPreferNaniteFallbackMesh,
+		bExportMaterialParameters,
+		false);
 
 	if (!bSuccess)
 		return false;
@@ -86,12 +90,10 @@ FUnrealInstanceTranslator::HapiCreateInputNodeForInstancer(
 	// Modifier chain name for component overrides on the static mesh (used with the ref counted input system).
 	const FName MeshChainName("sm_overrides");
 
-	const bool bUseRefCountedInputSystem = FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled();
 	FString FinalInputNodeName = InNodeName;
 	HAPI_NodeId ParentNodeId = -1;
 	FUnrealObjectInputHandle ParentHandle;
 	FUnrealObjectInputIdentifier Identifier;
-	if (bUseRefCountedInputSystem)
 	{
 		// Build the identifier for the entry in the manager
 		constexpr bool bIsLeaf = false;
@@ -173,7 +175,6 @@ FUnrealInstanceTranslator::HapiCreateInputNodeForInstancer(
 	HAPI_NodeId ObjectNodeId = -1;
 	HAPI_NodeId CopyNodeId = -1;
 	int32 MatNodeId = -1;
-	if (bUseRefCountedInputSystem)
 	{
 		// If we have existing valid HAPI nodes (so we are rebuilding a dirty / old version) reuse those nodes. This
 		// is quite important, to keep our obj merges / node references in _Houdini_ valid
@@ -209,14 +210,6 @@ FUnrealInstanceTranslator::HapiCreateInputNodeForInstancer(
 			HOUDINI_CHECK_ERROR_RETURN( FHoudiniEngineUtils::CreateNode(
 				ObjectNodeId, ObjectNodeId < 0 ? TEXT("SOP/attribcreate") : TEXT("attribcreate"), FinalInputNodeName, true, &MatNodeId), false);
 		}
-	}
-	else
-	{
-		HOUDINI_CHECK_ERROR_RETURN( FHoudiniEngineUtils::CreateNode(
-			-1, TEXT("SOP/attribcreate"), FinalInputNodeName, true, &MatNodeId), false);
-		
-		// Get the attribcreate node's parent OBJ NodeID
-		ObjectNodeId = FHoudiniEngineUtils::HapiGetParentNodeId(MatNodeId);
 	}
 
 	if (CopyNodeId < 0)
@@ -299,8 +292,9 @@ FUnrealInstanceTranslator::HapiCreateInputNodeForInstancer(
 			InstancesNodeId, 0, HAPI_UNREAL_ATTRIB_POSITION, &AttributeInfoPoint), false);
 
 		// Now that we have raw positions, we can upload them for our attribute.
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeFloatData(
-			Positions, InstancesNodeId, 0, HAPI_UNREAL_ATTRIB_POSITION, AttributeInfoPoint), false);
+
+		FHoudiniHapiAccessor Accessor(InstancesNodeId, 0, HAPI_UNREAL_ATTRIB_POSITION);
+		HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfoPoint, Positions), false);
 
 		// Create Rotation (rot) attribute
 		HAPI_AttributeInfo AttributeInfoRotation;
@@ -316,8 +310,8 @@ FUnrealInstanceTranslator::HapiCreateInputNodeForInstancer(
 			FHoudiniEngine::Get().GetSession(),
 			InstancesNodeId, 0, HAPI_UNREAL_ATTRIB_ROTATION, &AttributeInfoRotation), false);
 
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeFloatData(
-			Rotations, InstancesNodeId, 0, HAPI_UNREAL_ATTRIB_ROTATION, AttributeInfoRotation), false);
+		Accessor.Init(InstancesNodeId, 0, HAPI_UNREAL_ATTRIB_ROTATION);
+		HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfoRotation, Rotations), false);
 
 		// Create scale attribute
 		HAPI_AttributeInfo AttributeInfoScale;
@@ -333,12 +327,11 @@ FUnrealInstanceTranslator::HapiCreateInputNodeForInstancer(
 			FHoudiniEngine::Get().GetSession(),
 			InstancesNodeId, 0, HAPI_UNREAL_ATTRIB_SCALE, &AttributeInfoScale), false);
 
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeFloatData(
-			Scales, InstancesNodeId, 0, HAPI_UNREAL_ATTRIB_SCALE, AttributeInfoScale), false);
+		Accessor.Init(InstancesNodeId, 0, HAPI_UNREAL_ATTRIB_SCALE);
+		HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfoScale, Scales), false);
 
 		// Commit the instance point geo.
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::CommitGeo(
-			FHoudiniEngine::Get().GetSession(), InstancesNodeId), false);
+		HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiCommitGeo(InstancesNodeId), false);
 	}
 
 	// Connect the mesh to the copytopoints node's second input
@@ -357,7 +350,7 @@ FUnrealInstanceTranslator::HapiCreateInputNodeForInstancer(
 	int32 MatIdx = 0;
 	for (const FStaticMaterial& Mat : MeshMaterials)
 	{
-		FString MatName = MeshMaterials.Num() == 1 ? "unreal_material" : FString("unreal_material") + FString::FromInt(MatIdx);
+		FString MatName = MeshMaterials.Num() == 1 ? HAPI_UNREAL_ATTRIB_MATERIAL : FString(HAPI_UNREAL_ATTRIB_MATERIAL) + FString::FromInt(MatIdx);
 
 		// parm name is one indexed
 		ParmId = FHoudiniEngineUtils::HapiFindParameterByName(MatNodeId, "name" + std::to_string(++MatIdx), ParmInfo);
@@ -374,7 +367,6 @@ FUnrealInstanceTranslator::HapiCreateInputNodeForInstancer(
 		FHoudiniEngine::Get().GetSession(), MatNodeId, 0, CopyNodeId, 0), false);
 
 	// Update/create the entry in the input manager
-	if (bUseRefCountedInputSystem)
 	{
 		// Record the node in the manager
 		FUnrealObjectInputHandle Handle;
@@ -453,7 +445,7 @@ FUnrealInstanceTranslator::HapiCreateInputNodeForInstancer(
 			if (FHoudiniApi::ConnectNodeInput(
 					FHoudiniEngine::Get().GetSession(), CopyNodeId, 0, SMChainOutputNodeId, 0) != HAPI_RESULT_SUCCESS)
 			{
-				HOUDINI_LOG_WARNING(TEXT("Failed to connect the '%s' chain to the copytopoints instancer node."), SMChainOutputNodeId);
+				HOUDINI_LOG_WARNING(TEXT("Failed to connect the '%d' chain to the copytopoints instancer node."), (int32)SMChainOutputNodeId);
 			}
 		}
 	}

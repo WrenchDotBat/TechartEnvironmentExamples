@@ -39,6 +39,7 @@
 #include "HoudiniStaticMeshComponent.h"
 #include "HoudiniStaticMesh.h"
 #include "HoudiniFoliageTools.h"
+#include "HoudiniHLODLayerUtils.h"
 
 //#include "HAPI/HAPI_Common.h"
 
@@ -69,6 +70,9 @@
 	#include "LevelEditorViewport.h"
 	#include "MeshPaintHelpers.h"
 #endif
+#include "HoudiniEngineAttributes.h"
+#include "HoudiniFoliageUtils.h"
+#include "HoudiniMeshTranslator.h"
 
 #define LOCTEXT_NAMESPACE HOUDINI_LOCTEXT_NAMESPACE
 
@@ -85,7 +89,8 @@ bool
 FHoudiniInstanceTranslator::PopulateInstancedOutputPartData(
 	const FHoudiniGeoPartObject& InHGPO,
 	const TArray<UHoudiniOutput*>& InAllOutputs,
-	FHoudiniInstancedOutputPartData& OutInstancedOutputPartData)
+	FHoudiniInstancedOutputPartData& OutInstancedOutputPartData,
+	TSet<UObject*>& OutInvisibleObjects)
 {
 	// Get if force to use HISM from attribute
 	OutInstancedOutputPartData.bForceHISM = HasHISMAttribute(InHGPO.GeoId, InHGPO.PartId);
@@ -102,7 +107,8 @@ FHoudiniInstanceTranslator::PopulateInstancedOutputPartData(
 			OutInstancedOutputPartData.OriginalInstancedIndices,
 			OutInstancedOutputPartData.SplitAttributeName,
 			OutInstancedOutputPartData.SplitAttributeValues,
-			OutInstancedOutputPartData.PerSplitAttributes))
+			OutInstancedOutputPartData.PerSplitAttributes,
+			OutInvisibleObjects))
 		return false;
 	
 	// Check if this is a No-Instancers ( unreal_split_instances )
@@ -175,6 +181,8 @@ FHoudiniInstanceTranslator::PopulateInstancedOutputPartData(
 	// See if we have instancer material overrides
 	if (!GetMaterialOverridesFromAttributes(InHGPO.GeoId, InHGPO.PartId, 0, InHGPO.InstancerType, OutInstancedOutputPartData.MaterialAttributes))
 		OutInstancedOutputPartData.MaterialAttributes.Empty();
+	OutInstancedOutputPartData.DataLayers = FHoudiniDataLayerUtils::GetDataLayers(InHGPO.GeoId, InHGPO.PartId, HAPI_GROUPTYPE_POINT);
+	OutInstancedOutputPartData.HLODLayers = FHoudiniHLODLayerUtils::GetHLODLayers(InHGPO.GeoId, InHGPO.PartId, HAPI_ATTROWNER_POINT);
 
 	return true;
 }
@@ -202,6 +210,7 @@ FHoudiniInstanceTranslator::CreateAllInstancersFromHoudiniOutputs(
 	const FHoudiniPackageParams& InPackageParms,
 	const TMap<FHoudiniOutputObjectIdentifier, FHoudiniInstancedOutputPartData>* InPreBuiltInstancedOutputPartData)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniInstanceTranslator::CreateAllInstancersFromHoudiniOutputs);
 	int FoliageTypeCount = 0;
 
 	USceneComponent* ParentComponent = Cast<USceneComponent>(InOuterComponent);
@@ -223,7 +232,7 @@ FHoudiniInstanceTranslator::CreateAllInstancersFromHoudiniOutputs(
 			for(auto & OutputComponent : OutputObject.Value.OutputComponents)
 			{
 				if (OutputComponent)
-			        FHoudiniFoliageTools::RemoveFoliageTypeFromWorld(OutputComponent->GetWorld(), OutputObject.Value.FoliageType);
+					FHoudiniFoliageUtils::RemoveFoliageTypeFromWorld(OutputComponent->GetWorld(), OutputObject.Value.FoliageType);
 			}
 		}
 
@@ -283,6 +292,8 @@ FHoudiniInstanceTranslator::CreateAllInstancersFromHoudiniOutput(
 	// The default SM to be used if the instanced object has not been found (when using attribute instancers)
 	UStaticMesh * DefaultReferenceSM = FHoudiniEngine::Get().GetHoudiniDefaultReferenceMesh().Get();
 
+	TSet<UObject*> InvisibleObjects;
+
 	// Iterate on all of the output's HGPO, creating meshes as we go
 	for (const FHoudiniGeoPartObject& CurHGPO : InOutput->HoudiniGeoPartObjects)
 	{
@@ -305,7 +316,7 @@ FHoudiniInstanceTranslator::CreateAllInstancersFromHoudiniOutput(
 		}
 		if (!InstancedOutputPartDataPtr)
 		{
-			if (!PopulateInstancedOutputPartData(CurHGPO, InAllOutputs, InstancedOutputPartDataTmp))
+			if (!PopulateInstancedOutputPartData(CurHGPO, InAllOutputs, InstancedOutputPartDataTmp, InvisibleObjects))
 				continue;
 			InstancedOutputPartDataPtr = &InstancedOutputPartDataTmp;
 		}
@@ -471,8 +482,14 @@ FHoudiniInstanceTranslator::CreateAllInstancersFromHoudiniOutput(
 			if (NewInstancerComponents.IsEmpty() && NewInstancerActors.IsEmpty())
 				continue;
 
+
 			for(auto NewInstancerComponent : NewInstancerComponents)
 			{
+				if (InvisibleObjects.Contains(InstancedObject))
+				{
+					NewInstancerComponent->SetVisibleFlag(false);	
+				}
+
 				// Copy the per-instance custom data if we have any
 				if (InstancedOutputPartData.PerInstanceCustomData.Num() > 0)
 				{
@@ -555,6 +572,16 @@ FHoudiniInstanceTranslator::CreateAllInstancersFromHoudiniOutput(
 
 			if(InstancedOutputPartData.AllBakeActorClassNames.IsValidIndex(FirstOriginalInstanceIndex) && !InstancedOutputPartData.AllBakeActorClassNames[FirstOriginalInstanceIndex].IsEmpty())
 				NewOutputObject.CachedAttributes.Add(HAPI_UNREAL_ATTRIB_BAKE_ACTOR_CLASS, InstancedOutputPartData.AllBakeActorClassNames[FirstOriginalInstanceIndex]);
+
+			if(InstancedOutputPartData.HLODLayers.IsValidIndex(FirstOriginalInstanceIndex))
+			{
+				NewOutputObject.HLODLayers.Add(InstancedOutputPartData.HLODLayers[FirstOriginalInstanceIndex]);
+			}
+
+			if (InstancedOutputPartData.DataLayers.IsValidIndex(FirstOriginalInstanceIndex))
+			{
+				NewOutputObject.DataLayers = InstancedOutputPartData.DataLayers[FirstOriginalInstanceIndex].DataLayers;
+			}
 
 			// TODO: Check if we should apply the same logic to other cached attributes?
 			// When using PDG, we have one bake folder per PDG output (array size 1)
@@ -924,12 +951,13 @@ bool
 FHoudiniInstanceTranslator::GetInstancerObjectsAndTransforms(
 	const FHoudiniGeoPartObject& InHGPO,
 	const TArray<UHoudiniOutput*>& InAllOutputs,
-	TArray<UObject*>& OutInstancedObjects,
+	TArray<TObjectPtr<UObject>>& OutInstancedObjects,
 	TArray<TArray<FTransform>>& OutInstancedTransforms,
 	TArray<TArray<int32>>& OutInstancedIndices,
 	FString& OutSplitAttributeName,
 	TArray<FString>& OutSplitAttributeValues,
-	TMap<FString, FHoudiniInstancedOutputPerSplitAttributes>& OutPerSplitAttributes)
+	TMap<FString, FHoudiniInstancedOutputPerSplitAttributes>& OutPerSplitAttributes,
+	TSet<UObject*>& OutInvisibleObjects)
 {
 	TArray<UObject*> InstancedObjects;
 	TArray<TArray<FTransform>> InstancedTransforms;
@@ -1014,6 +1042,9 @@ FHoudiniInstanceTranslator::GetInstancerObjectsAndTransforms(
 
 					const FHoudiniOutputObject& CurrentOutputObject = OutObjPair.Value;
 
+					if (CurrentOutputObject.bIsImplicit)
+						continue;
+
 					// In the case of a single-instance we can use the proxy (if it is current)
 					// FHoudiniOutputTranslator::UpdateOutputs doesn't allow proxies if there is more than one instance in an output
 					if (InstancedHGPOTransforms[HGPOIdx].Num() <= 1 && CurrentOutputObject.bProxyIsCurrent 
@@ -1024,6 +1055,13 @@ FHoudiniInstanceTranslator::GetInstancerObjectsAndTransforms(
 					else if (IsValid(CurrentOutputObject.OutputObject))
 					{
 						ObjectsToInstance.Add(CurrentOutputObject.OutputObject);
+
+						EHoudiniSplitType SplitType = FHoudiniMeshTranslator::GetSplitTypeFromSplitName(OutObjPair.Key.SplitIdentifier);
+						if (SplitType == EHoudiniSplitType::InvisibleComplexCollider)
+						{
+							OutInvisibleObjects.Add(CurrentOutputObject.OutputObject);
+						}
+
 					}
 				}
 			}
@@ -1160,12 +1198,16 @@ FHoudiniInstanceTranslator::UpdateInstanceVariationObjects(
 			}
 
 			// If we don't have variations, simply use the original object
-			if (CurInstancedOutput.VariationObjects.Num() <= 0)
+			if (CurInstancedOutput.VariationObjects.Num() == 0)
 			{
 				// No variations? add the original one
 				CurInstancedOutput.VariationObjects.Add(OriginalObj);
 				CurInstancedOutput.VariationTransformOffsets.Add(FTransform::Identity);
 				CurInstancedOutput.TransformVariationIndices.SetNum(0);
+			}
+			else
+			{
+				HOUDINI_LOG_WARNING(TEXT("Instance Variations are deprecated and will be removed in a future version. See documentation for more details."));
 			}
 
 			// If the number of transforms has changed since the previous cook, 
@@ -1493,7 +1535,7 @@ FHoudiniInstanceTranslator::GetAttributeInstancerObjectsAndTransforms(
 		HAPI_UNREAL_ATTRIB_INSTANCE, HAPI_ATTROWNER_POINT, &AttribInfo);
 	
 	// unreal_instance attribute on points
-	if (Result != HAPI_RESULT_SUCCESS || AttribInfo.exists == false)
+	if (Result != HAPI_RESULT_SUCCESS || !AttribInfo.exists)
 	{
 		is_override_attr = true;
 		Result = FHoudiniApi::GetAttributeInfo(
@@ -1600,12 +1642,8 @@ FHoudiniInstanceTranslator::GetAttributeInstancerObjectsAndTransforms(
 		if (!AttributeObject)
 		{
 			// See if the ref is a class that we can instantiate
-#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 1
-			// UE5.1 deprecated ANY_PACKAGE, using a null outer doesn't work so use FindFirstObject instead
-			UClass* FoundClass = FindFirstObject<UClass>(*AssetName, EFindFirstObjectOptions::NativeFirst);
-#else
-			UClass* FoundClass = FindObject<UClass>(ANY_PACKAGE, *AssetName);
-#endif
+			UClass* FoundClass = FHoudiniEngineRuntimeUtils::GetClassByName(AssetName);
+
 			if (FoundClass != nullptr)
 			{
 				// TODO: ensure we'll be able to create an actor from this class! 
@@ -1688,13 +1726,7 @@ FHoudiniInstanceTranslator::GetAttributeInstancerObjectsAndTransforms(
 
 				if (!AttributeObject)
 				{
-#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 1
-					// UE5.1 deprecated ANY_PACKAGE, using a null outer doesn't work so use FindFirstObject instead
-					UClass* FoundClass = FindFirstObject<UClass>(*Iter, EFindFirstObjectOptions::NativeFirst);
-#else
-					UClass* FoundClass = FindObject<UClass>(ANY_PACKAGE, *Iter);
-#endif
-
+					UClass* FoundClass = FHoudiniEngineRuntimeUtils::GetClassByName(Iter);
 					if (FoundClass != nullptr)
 					{
 						// TODO: ensure we'll be able to create an actor from this class!
@@ -1831,9 +1863,9 @@ FHoudiniInstanceTranslator::GetAttributeInstancerObjectsAndTransforms(
 			SplitIndicesMap.FindOrAdd(SplitAttrValue).Add(CurrentIndices[InstIdx]);
 			
 			// Record attributes for any split value we have not yet seen
+			FHoudiniInstancedOutputPerSplitAttributes& PerSplitAttributes = OutPerSplitAttributes.FindOrAdd(SplitAttrValue);
 			if (bHasAnyPerSplitAttributes)
 			{
-				FHoudiniInstancedOutputPerSplitAttributes& PerSplitAttributes = OutPerSplitAttributes.FindOrAdd(SplitAttrValue);
 				if (bHasLevelPaths && PerSplitAttributes.LevelPath.IsEmpty() && AllLevelPaths.IsValidIndex(InstIdx))
 				{
 					PerSplitAttributes.LevelPath = AllLevelPaths[InstIdx];
@@ -1851,6 +1883,10 @@ FHoudiniInstanceTranslator::GetAttributeInstancerObjectsAndTransforms(
 					PerSplitAttributes.BakeOutlinerFolder = AllBakeOutlinerFolders[InstIdx];
 				}
 			}
+
+			PerSplitAttributes.DataLayers = FHoudiniDataLayerUtils::GetDataLayers(InHGPO.GeoId, InHGPO.PartId, HAPI_GroupType::HAPI_GROUPTYPE_POINT, InstIdx);
+			PerSplitAttributes.HLODLayers = FHoudiniHLODLayerUtils::GetHLODLayers(InHGPO.GeoId, InHGPO.PartId, HAPI_ATTROWNER_POINT, InstIdx);
+
 		}
 
 		// Add the objects, transform, split values to the final arrays
@@ -2083,15 +2119,15 @@ FHoudiniInstanceTranslator::CreateOrUpdateInstancer(
 	TArray<USceneComponent*>& NewComponents,
 	TArray<AActor*>& OldActors,
 	TArray<AActor*>& NewActors,
-	const bool InIsSplitMeshInstancer,
-	const bool InIsFoliageInstancer,
+	bool InIsSplitMeshInstancer,
+	bool InIsFoliageInstancer,
 	const TArray<UMaterialInterface *>& InstancerMaterials,
 	const TArray<int32>& OriginalInstancerObjectIndices,
 	int32& FoliageTypeCount,
 	UFoliageType*& FoliageTypeUsed,
 	UWorld*& WorldUsed,
-	const bool bForceHISM,
-	const bool bForceInstancer)
+	bool bForceHISM,
+	bool bForceInstancer)
 {
 	// See if we can reuse the old component
 	InstancerComponentType OldType = GetComponentsType(OldComponents);
@@ -2430,6 +2466,8 @@ FHoudiniInstanceTranslator::CreateOrUpdateInstancedActorComponent(
 	USceneComponent* ParentComponent,
 	USceneComponent*& CreatedInstancedComponent)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniInstanceTranslator::CreateInstancedActorInstancer);
+
 	if (!InstancedObject)
 		return false;
 
@@ -2478,6 +2516,7 @@ FHoudiniInstanceTranslator::CreateOrUpdateInstancedActorComponent(
 	// Set the number of needed instances
 	InstancedActorComponent->SetNumberOfInstances(InstancedObjectTransforms.Num());
 
+	AActor* ReferenceActor = nullptr;
 	for (int32 Idx = 0; Idx < InstancedObjectTransforms.Num(); Idx++)
 	{
 		// if we already have an actor, we can reuse it
@@ -2488,7 +2527,7 @@ FHoudiniInstanceTranslator::CreateOrUpdateInstancedActorComponent(
 		AActor* CurInstance = InstancedActorComponent->GetInstancedActorAt(Idx);
 		if (!IsValid(CurInstance))
 		{
-			CurInstance = SpawnInstanceActor(CurTransform, SpawnLevel, InstancedActorComponent);
+			CurInstance = SpawnInstanceActor(CurTransform, SpawnLevel, InstancedActorComponent, ReferenceActor);
 			InstancedActorComponent->SetInstanceAt(Idx, CurTransform, CurInstance);
 		}
 		else
@@ -2496,6 +2535,9 @@ FHoudiniInstanceTranslator::CreateOrUpdateInstancedActorComponent(
 			// We can simply update the actor's transform
 			InstancedActorComponent->SetInstanceTransformAt(Idx, CurTransform);	
 		}
+
+		if (!ReferenceActor)
+			ReferenceActor = CurInstance;
 
 		// Keep or clear tags on the instanced actor
 		FHoudiniEngineUtils::KeepOrClearActorTags(CurInstance, true, true, InstancerHGPO);
@@ -2561,6 +2603,9 @@ FHoudiniInstanceTranslator::CreateOrUpdateMeshSplitInstancerComponent(
 
 	if (!MeshSplitComponent)
 		return false;
+
+	// Write a deprecation warning for mesh split instancer... 
+	HOUDINI_LOG_WARNING(TEXT("MeshSplitInstancers are deprecated in Houdini 20.0 - we recommand switching to attribute instancers and the unreal_split_attr attribute instead."));
 
 	MeshSplitComponent->SetStaticMesh(InstancedStaticMesh);
 	MeshSplitComponent->SetOverrideMaterials(InInstancerMaterials);
@@ -2652,7 +2697,7 @@ FHoudiniInstanceTranslator::CreateOrUpdateMeshSplitInstancerComponent(
 		}
 
 		// Apply them to the instances
-		TArray<class UStaticMeshComponent*>& Instances = MeshSplitComponent->GetInstancesForWrite();
+		auto & Instances = MeshSplitComponent->GetInstancesForWrite();
 		for (int32 InstIndex = 0; InstIndex < Instances.Num(); InstIndex++)
 		{
 			UStaticMeshComponent* CurSMC = Instances[InstIndex];
@@ -2690,7 +2735,7 @@ FHoudiniInstanceTranslator::CreateOrUpdateMeshSplitInstancerComponent(
 	// if failing to find the attrib on a component, skip the rest
 	if (AllPropertyAttributes.Num() > 0)
 	{
-		TArray<class UStaticMeshComponent*>& Instances = MeshSplitComponent->GetInstancesForWrite();
+		auto & Instances = MeshSplitComponent->GetInstancesForWrite();
 		for (int32 InstIndex = 0; InstIndex < Instances.Num(); InstIndex++)
 		{
 			UStaticMeshComponent* CurSMC = Instances[InstIndex];
@@ -2905,6 +2950,31 @@ FHoudiniInstanceTranslator::CreateOrUpdateFoliageInstances(
 
 	++FoliageTypeCount;
 
+	// Set material overrides on the cooked foliage type
+	if (InstancerMaterials.Num() > 0)
+	{
+		UFoliageType_InstancedStaticMesh* const CookedMeshFoliageType = Cast<UFoliageType_InstancedStaticMesh>(CookedFoliageType);
+		if (IsValid(CookedMeshFoliageType))
+		{
+			UStaticMesh const* const FoliageMesh = CookedMeshFoliageType->GetStaticMesh();
+			const int32 MeshMaterialSlotCount = IsValid(FoliageMesh) ? FoliageMesh->GetStaticMaterials().Num() : 0;
+			const int32 MaterialOverrideSlotCount = FMath::Min(InstancerMaterials.Num(), MeshMaterialSlotCount);
+			for (int32 Idx = 0; Idx < MaterialOverrideSlotCount; ++Idx)
+			{
+				if (IsValid(InstancerMaterials[Idx]))
+				{
+					if (!CookedMeshFoliageType->OverrideMaterials.IsValidIndex(Idx))
+						CookedMeshFoliageType->OverrideMaterials.SetNum(Idx + 1);
+					CookedMeshFoliageType->OverrideMaterials[Idx] = InstancerMaterials[Idx];
+				}
+				else if (CookedMeshFoliageType->OverrideMaterials.IsValidIndex(Idx) && CookedMeshFoliageType->OverrideMaterials[Idx])
+				{
+					CookedMeshFoliageType->OverrideMaterials[Idx] = nullptr;
+				}
+			}
+		}
+	}
+	
 	FTransform HoudiniAssetTransform = ParentComponent->GetComponentTransform();
 	
 	TArray<FFoliageInstance> FoliageInstances;
@@ -2940,16 +3010,6 @@ FHoudiniInstanceTranslator::CreateOrUpdateFoliageInstances(
 	    {
 		    // TODO: This was due to a bug in UE4.22-20, check if still needed! 
 		    FoliageHISMC->BuildTreeIfOutdated(true, true);
-
-			if (InstancerMaterials.Num() > 0)
-			{
-				int32 MeshMaterialCount = InstancedStaticMesh ? InstancedStaticMesh->GetStaticMaterials().Num() : 1;
-				for (int32 Idx = 0; Idx < MeshMaterialCount; ++Idx)
-				{
-					if (InstancerMaterials.IsValidIndex(Idx) && IsValid(InstancerMaterials[Idx]))
-						FoliageHISMC->SetMaterial(Idx, InstancerMaterials[Idx]);
-				}
-			}
 
 	    	FHoudiniEngineUtils::KeepOrClearComponentTags(FoliageHISMC, &InstancerGeoPartObject);
 
@@ -3239,9 +3299,6 @@ FHoudiniInstanceTranslator::GetMaterialOverridesFromAttributes(
 	const TArray<FString>& InAllAttribNames,
 	TArray<FString>& OutMaterialAttributes)
 {
-	HAPI_AttributeInfo MaterialAttributeInfo;
-	FHoudiniApi::AttributeInfo_Init(&MaterialAttributeInfo);
-
 	// See if the "materialX" attributes were added as zero-based or not by searching for "material0"
 	// If they are not (so the attributes starts at unreal_material1). then we'll need to decrement the idx
 	FString MatZero = InAttributeName;
@@ -3292,7 +3349,9 @@ FHoudiniInstanceTranslator::GetMaterialOverridesFromAttributes(
 			OutMaterialAttributes.Add("");
 		}
 
-		bool Res = FHoudiniEngineUtils::HapiGetAttributeDataAsString(InGeoNodeId, InPartId, TCHAR_TO_ANSI(*AttribName), MaterialAttributeInfo, MatName, 0, HAPI_ATTROWNER_INVALID, InAttributeIndex, 1);
+		FHoudiniHapiAccessor Accessor(InGeoNodeId, InPartId, TCHAR_TO_ANSI(*AttribName));
+		bool Res = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, MatName, InAttributeIndex, 1);
+
 		if (!Res)
 		{
 			HOUDINI_LOG_WARNING(TEXT("[FHoudiniInstanceTranslator::GetMaterialOverridesFromAttributes]: Failed to get material override index %d."), OverrideIdx);
@@ -3378,8 +3437,8 @@ FHoudiniInstanceTranslator::GetInstancerMaterialInstances(
 		return true;
 	
 	TArray<UPackage*> MaterialAndTexturePackages;
-	TMap<FHoudiniMaterialIdentifier, UMaterialInterface*> InputAssignmentMaterials;
-	TMap<FHoudiniMaterialIdentifier, UMaterialInterface*> OutputAssignmentMaterials;
+	TMap<FHoudiniMaterialIdentifier, TObjectPtr<UMaterialInterface>> InputAssignmentMaterials;
+	TMap<FHoudiniMaterialIdentifier, TObjectPtr<UMaterialInterface>> OutputAssignmentMaterials;
 	static constexpr bool bForceRecookAll = false;
 	bool bSuccess = false;
 	if (FHoudiniMaterialTranslator::CreateMaterialInstances(
@@ -3401,7 +3460,7 @@ FHoudiniInstanceTranslator::GetInstancerMaterialInstances(
 			// skip the invalid ids (non material instance)
 			if (!MaterialIdentifier.IsValid())
 				continue;
-			UMaterialInterface** Material = OutputAssignmentMaterials.Find(MaterialIdentifier);
+			TObjectPtr<UMaterialInterface>* Material = OutputAssignmentMaterials.Find(MaterialIdentifier);
 			if (!Material || !IsValid(*Material))
 			{
 				OutInstancerMaterials[SlotIdx] = nullptr;
@@ -3458,25 +3517,24 @@ FHoudiniInstanceTranslator::IsSplitInstancer(const int32& InGeoId, const int32& 
 	{
 		// Try on primitive
 		Owner = HAPI_ATTROWNER_PRIM;
-		bSplitMeshInstancer = FHoudiniEngineUtils::HapiCheckAttributeExists(
-			InGeoId, InPartId, HAPI_UNREAL_ATTRIB_SPLIT_INSTANCES, Owner);
+		bSplitMeshInstancer = FHoudiniEngineUtils::HapiCheckAttributeExists(InGeoId, InPartId, HAPI_UNREAL_ATTRIB_SPLIT_INSTANCES, Owner);
 	}
 
 	if (!bSplitMeshInstancer)
 		return false;
 
-	HAPI_AttributeInfo AttributeInfo;
+	// Add deprecation warning for 20.0
+	HOUDINI_LOG_WARNING(TEXT("MeshSplitInstancers are deprecated in Houdini 20.0 - we recommand switching to attribute instancers and the unreal_split_attr attribute instead."));
+
 	TArray<int32> IntData;
-	if (!FHoudiniEngineUtils::HapiGetAttributeDataAsInteger(
-		InGeoId, InPartId, HAPI_UNREAL_ATTRIB_SPLIT_INSTANCES,
-		AttributeInfo, IntData, 0, Owner, 0, 1))
+	FHoudiniHapiAccessor Accessor(InGeoId, InPartId, HAPI_UNREAL_ATTRIB_SPLIT_INSTANCES);
+	bool bSuccess = Accessor.GetAttributeData(Owner, IntData, 0, 1);
+
+	if (!bSuccess || IntData.IsEmpty())
 	{
 		return false;
 	}
 	
-	if (!AttributeInfo.exists || AttributeInfo.count <= 0)
-		return false;
-
 	return (IntData[0] != 0);
 }
 
@@ -3508,15 +3566,13 @@ FHoudiniInstanceTranslator::IsFoliageInstancer(const int32& InGeoId, const int32
 		return false;
 
 	TArray<int32> IntData;
-	HAPI_AttributeInfo AttributeInfo;
-	FHoudiniApi::AttributeInfo_Init(&AttributeInfo);
 
 	// Get the first attribute value as Int
-	FHoudiniEngineUtils::HapiGetAttributeDataAsInteger(
-		InGeoId, InPartId, HAPI_UNREAL_ATTRIB_FOLIAGE_INSTANCER,
-		AttributeInfo, IntData, 0, Owner, 0, 1);
+	FHoudiniHapiAccessor Accessor(InGeoId, InPartId, HAPI_UNREAL_ATTRIB_FOLIAGE_INSTANCER);
 
-	if (!AttributeInfo.exists || AttributeInfo.count <= 0)
+	bool bSuccess = Accessor.GetAttributeData(Owner, IntData, 0, 1);
+
+	if (!bSuccess || IntData.IsEmpty())
 		return false;
 
 	return (IntData[0] != 0);
@@ -3528,8 +3584,11 @@ FHoudiniInstanceTranslator::SpawnInstanceActor(
 	const FTransform& InTransform,
 	ULevel* InSpawnLevel,
 	UHoudiniInstancedActorComponent* InIAC,
+	AActor* InReferenceActor,
 	const FName Name)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniInstanceTranslator::SpawnInstanceActor);
+
 	if (!IsValid(InIAC))
 		return nullptr;
 
@@ -3539,20 +3598,46 @@ FHoudiniInstanceTranslator::SpawnInstanceActor(
 
 	AActor* NewActor = nullptr;
 
-#if WITH_EDITOR
-	// Try to spawn a new actor for the given transform
-	GEditor->ClickLocation = InTransform.GetTranslation();
-	GEditor->ClickPlane = FPlane(GEditor->ClickLocation, FVector::UpVector);
-		
-	TArray<AActor*> NewActors = FLevelEditorViewportClient::TryPlacingActorFromObject(InSpawnLevel, InstancedObject, false, RF_Transactional, nullptr, Name);
-	if (NewActors.Num() > 0)
+	UWorld* SpawnWorld = InSpawnLevel->GetWorld();
+	UClass* InstancedActorClass = InIAC->GetInstancedActorClass();
+	if (InstancedActorClass == nullptr || SpawnWorld == nullptr)
 	{
-		if (IsValid(NewActors[0]))
+#if WITH_EDITOR
+		// Try to spawn a new actor for the given transform
+		GEditor->ClickLocation = InTransform.GetTranslation();
+		GEditor->ClickPlane = FPlane(GEditor->ClickLocation, FVector::UpVector);
+
+		// Using this function lets unreal find the appropriate actor class for us
+		// We only use it for the first instanced actors just to get the best actor class for that object
+		// Once we have that class - it is much faster (~25x) to just use SpawnActor instead
+		TArray<AActor*> NewActors = FLevelEditorViewportClient::TryPlacingActorFromObject(InSpawnLevel, InstancedObject, false, RF_Transactional, nullptr, Name);
+		if (NewActors.Num() > 0)
 		{
-			NewActor = NewActors[0];
+			if (IsValid(NewActors[0]))
+			{
+				NewActor = NewActors[0];
+			}
 		}
-	}
+
+		// Set the instanced actor class on the IAC so we can reuse it
+		if(NewActor)
+			InIAC->SetInstancedActorClass(NewActor->GetClass());
 #endif
+	}
+	else
+	{
+		FActorSpawnParameters SpawnParams;
+		SpawnParams.ObjectFlags = RF_Transactional;
+		//SpawnParams.Owner = ComponentOuter;
+		SpawnParams.OverrideLevel = InSpawnLevel;
+		SpawnParams.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Requested;
+		SpawnParams.Template = nullptr;
+		SpawnParams.bNoFail = true;
+		// We need to use the previously instantiated actor as template when instantiating a decal material.
+		SpawnParams.Template = InReferenceActor;
+
+		NewActor = SpawnWorld->SpawnActor(InstancedActorClass, &InTransform, SpawnParams);
+	}
 
 	// Make sure that the actor was spawned in the proper level
 	FHoudiniEngineUtils::MoveActorToLevel(NewActor, InSpawnLevel);
@@ -3653,15 +3738,13 @@ FHoudiniInstanceTranslator::GetInstancerSplitAttributesAndValues(
 
 	// Look for the unreal_split_attr attribute
 	// This attribute indicates the name of the point attribute that we'll use to split the instances further
-	HAPI_AttributeInfo SplitAttribInfo;
-	FHoudiniApi::AttributeInfo_Init(&SplitAttribInfo);
 
 	TArray<FString> StringData;
-	bHasSplitAttribute = FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		InGeoId, InPartId, HAPI_UNREAL_ATTRIB_SPLIT_ATTR,
-		SplitAttribInfo, StringData, 1, InSplitAttributeOwner, 0, 1);
 
-	if (!bHasSplitAttribute || !SplitAttribInfo.exists || StringData.Num() <= 0)
+	FHoudiniHapiAccessor Accessor(InGeoId, InPartId, HAPI_UNREAL_ATTRIB_SPLIT_ATTR);
+	bHasSplitAttribute = Accessor.GetAttributeData(InSplitAttributeOwner, 1, StringData, 0, 1);
+
+	if (!bHasSplitAttribute || StringData.Num() <= 0)
 		return false;
 
 	OutSplitAttributeName = StringData[0];
@@ -3670,16 +3753,8 @@ FHoudiniInstanceTranslator::GetInstancerSplitAttributesAndValues(
 	OutAllSplitAttributeValues.Empty();
 	if (!OutSplitAttributeName.IsEmpty())
 	{
-		//HAPI_AttributeInfo SplitAttribInfo;
-		FHoudiniApi::AttributeInfo_Init(&SplitAttribInfo);
-		bool bSplitAttrFound = FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-			InGeoId,
-			InPartId,
-			TCHAR_TO_ANSI(*OutSplitAttributeName),
-			SplitAttribInfo, 
-			OutAllSplitAttributeValues,
-			1,
-			InSplitAttributeOwner);
+		Accessor.Init(InGeoId, InPartId, TCHAR_TO_ANSI(*OutSplitAttributeName));
+		bool bSplitAttrFound = Accessor.GetAttributeData(InSplitAttributeOwner, 1, OutAllSplitAttributeValues);
 
 		if (!bSplitAttrFound || OutAllSplitAttributeValues.Num() <= 0)
 		{
@@ -3707,20 +3782,17 @@ bool
 FHoudiniInstanceTranslator::HasHISMAttribute(const HAPI_NodeId& GeoId, const HAPI_NodeId& PartId) 
 {
 	bool bHISM = false;
-	HAPI_AttributeInfo AttriInfo;
-	FHoudiniApi::AttributeInfo_Init(&AttriInfo);
 
 	TArray<int32> IntData;
 	IntData.Empty();
 
-	if (!FHoudiniEngineUtils::HapiGetAttributeDataAsInteger(
-		GeoId, PartId, HAPI_UNREAL_ATTRIB_HIERARCHICAL_INSTANCED_SM,
-		AttriInfo, IntData, 1, HAPI_ATTROWNER_INVALID, 0, 1))
-	{
-		return false;
-	}
+	FHoudiniHapiAccessor Accessor(GeoId, PartId, HAPI_UNREAL_ATTRIB_HIERARCHICAL_INSTANCED_SM);
+	bool bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, 1,  IntData, 0, 1);
 
-	if (!AttriInfo.exists || IntData.Num() <= 0)
+	if (!bSuccess)
+		return false;
+
+	if (IntData.Num() <= 0)
 		return false;
 
 	return IntData[0] != 0;
@@ -3730,20 +3802,16 @@ bool
 FHoudiniInstanceTranslator::HasForceInstancerAttribute(const HAPI_NodeId& GeoId, const HAPI_NodeId& PartId) 
 {
 	bool bHISM = false;
-	HAPI_AttributeInfo AttriInfo;
-	FHoudiniApi::AttributeInfo_Init(&AttriInfo);
-
 	TArray<int32> IntData;
 	IntData.Empty();
 
-	if (!FHoudiniEngineUtils::HapiGetAttributeDataAsInteger(
-		GeoId, PartId, HAPI_UNREAL_ATTRIB_FORCE_INSTANCER,
-		AttriInfo, IntData, 1, HAPI_ATTROWNER_INVALID, 0, 1))
-	{
-		return false;
-	}
+	FHoudiniHapiAccessor Accessor(GeoId, PartId, HAPI_UNREAL_ATTRIB_FORCE_INSTANCER);
+	bool bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, 1, IntData, 0, 1);
 
-	if (!AttriInfo.exists || IntData.Num() <= 0)
+	if (!bSuccess)
+		return false;
+
+	if (IntData.Num() <= 0)
 		return false;
 
 	return IntData[0] != 0;
@@ -3901,18 +3969,14 @@ FHoudiniInstanceTranslator::GetPerInstanceCustomData(
 	// First look for the number of custom floats
 	// If we dont have the attribute, or it is set to zero, we dont have PerInstanceCustomData
 	// HAPI_UNREAL_ATTRIB_INSTANCE_NUM_CUSTOM_FLOATS "unreal_num_custom_floats"	
-	HAPI_AttributeInfo AttribInfoNumCustomFloats;
-	FHoudiniApi::AttributeInfo_Init(&AttribInfoNumCustomFloats);
 
 	TArray<int32> CustomFloatsArray;
-	if (!FHoudiniEngineUtils::HapiGetAttributeDataAsInteger(
-		InGeoNodeId, InPartId,
-		HAPI_UNREAL_ATTRIB_INSTANCE_NUM_CUSTOM_FLOATS,
-		AttribInfoNumCustomFloats,
-		CustomFloatsArray))
-	{
+
+	FHoudiniHapiAccessor Accessor(InGeoNodeId, InPartId, HAPI_UNREAL_ATTRIB_INSTANCE_NUM_CUSTOM_FLOATS);
+	bool bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, CustomFloatsArray);
+
+	if (!bSuccess)
 		return false;
-	}
 
 	if (CustomFloatsArray.Num() <= 0)
 		return false;
@@ -3941,16 +4005,11 @@ FHoudiniInstanceTranslator::GetPerInstanceCustomData(
 		FString CurrentAttr = TEXT(HAPI_UNREAL_ATTRIB_INSTANCE_CUSTOM_DATA_PREFIX) + FString::FromInt(nIdx);
 		
 		// TODO? Tuple values Array attributes?
-		HAPI_AttributeInfo AttribInfo;
-		FHoudiniApi::AttributeInfo_Init(&AttribInfo);
+		Accessor.Init(InGeoNodeId, InPartId, TCHAR_TO_ANSI(*CurrentAttr));
+		bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, 1, AllCustomDataAttributeValues[nIdx]);
 
 		// Retrieve the custom data values
-		if (!FHoudiniEngineUtils::HapiGetAttributeDataAsFloat(
-			InGeoNodeId, InPartId,
-			TCHAR_TO_ANSI(*CurrentAttr),
-			AttribInfo,
-			AllCustomDataAttributeValues[nIdx],
-			1))
+		if (!bSuccess)
 		{
 			// Skip, we'll fill the values with zeros later on
 			continue;
@@ -4073,8 +4132,13 @@ FHoudiniInstanceTranslator::UpdateChangedPerInstanceCustomData(
 
 	// Force recreation of the render data when proxy is created
 	//NewISMC->InstanceUpdateCmdBuffer.Edit();
+
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 4
+	// TODO:5.4 ?? fix me!!
+#else
 	// Cant call the edit function above because the function is defined in a different cpp file than the .h it is declared in...
 	ISMC->InstanceUpdateCmdBuffer.NumEdits++;
+#endif
 	
 	ISMC->MarkRenderStateDirty();
 	

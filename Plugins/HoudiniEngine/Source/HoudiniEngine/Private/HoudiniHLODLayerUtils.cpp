@@ -27,7 +27,10 @@
 #include "HoudiniHLODLayerUtils.h"
 
 #include "HoudiniEngine.h"
+#include "HoudiniEngineAttributes.h"
 #include "WorldPartition/HLOD/HLODLayer.h"
+#include "Landscape.h"
+#include "LandscapeStreamingProxy.h"
 
 void FHoudiniHLODLayerUtils::AddActorToHLOD(AActor* Actor, const FString& AssetRef)
 {
@@ -46,20 +49,51 @@ void FHoudiniHLODLayerUtils::AddActorToHLOD(AActor* Actor, const FString& AssetR
 }
 
 TArray<FHoudiniHLODLayer>
+FHoudiniHLODLayerUtils::GetHLODLayers(HAPI_NodeId NodeId, HAPI_PartId PartId, HAPI_AttributeOwner Owner, int Index)
+{
+	TArray<FString> HLODNames;
+	FHoudiniHapiAccessor Accessor(NodeId, PartId, HAPI_UNREAL_ATTRIB_HLOD_LAYER);
+	Accessor.GetAttributeData(Owner, HLODNames, Index, 1);
+	if(HLODNames.IsEmpty())
+		return {};
+
+	FHoudiniHLODLayer Layer;
+	Layer.Name = HLODNames[0];
+
+	TArray<FHoudiniHLODLayer> Results;
+	Results.Add(Layer);
+	return Results;
+
+}
+
+TArray<FHoudiniHLODLayer>
+FHoudiniHLODLayerUtils::GetHLODLayers(HAPI_NodeId NodeId, HAPI_PartId PartId, HAPI_AttributeOwner Owner)
+{
+	TArray<FString> HLODNames;
+	FHoudiniHapiAccessor Accessor(NodeId, PartId, HAPI_UNREAL_ATTRIB_HLOD_LAYER);
+	Accessor.GetAttributeData(Owner, HLODNames);
+	if(HLODNames.IsEmpty())
+		return {};
+
+	TArray<FHoudiniHLODLayer> Results;
+	Results.SetNum(HLODNames.Num());
+	for (int Index = 0; Index < HLODNames.Num(); Index++)
+	{
+		Results[Index].Name = HLODNames[Index];
+	}
+
+	return Results;
+}
+
+TArray<FHoudiniHLODLayer>
 FHoudiniHLODLayerUtils::GetHLODLayers(HAPI_NodeId NodeId, HAPI_PartId PartId)
 {
 	TArray<FHoudiniHLODLayer> Results;
 
 	// Get a list of all groups this part MAY be a member of.
 	TArray<FString> HLODNames;
-
-	HAPI_AttributeInfo AttributeInfo;
-	FHoudiniApi::AttributeInfo_Init(&AttributeInfo);
-
-	bool bResult = FHoudiniEngineUtils::HapiGetAttributeDataAsString(
-		NodeId, PartId, 
-		HAPI_UNREAL_ATTRIB_HLOD_LAYER, 
-		AttributeInfo, HLODNames);
+	FHoudiniHapiAccessor Accessor(NodeId, PartId, HAPI_UNREAL_ATTRIB_HLOD_LAYER);
+	bool bResult = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, HLODNames);
 
 	for (FString HLODLayerName : HLODNames)
 	{
@@ -79,10 +113,26 @@ void FHoudiniHLODLayerUtils::ApplyHLODLayersToActor(const FHoudiniPackageParams&
 	if (Layers.Num() == 0)
 		return;
 
-	for (auto& Layer : Layers)
+	const FHoudiniHLODLayer & Layer = Layers[0];
+
+	AddActorToHLOD(Actor, Layer.Name);
+	
+	if(ALandscape* Landscape = Cast<ALandscape>(Actor))
 	{
-		AddActorToHLOD(Actor, Layer.Name);
+
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 1
+		TArray<TWeakObjectPtr<ALandscapeStreamingProxy>> Proxies = Landscape->GetLandscapeInfo()->StreamingProxies;
+#else
+		TArray<TObjectPtr<ALandscapeStreamingProxy>> Proxies = Proxy->GetLandscapeInfo()->Proxies;
+#endif
+
+		for(TWeakObjectPtr<ALandscapeStreamingProxy> Child : Proxies)
+		{
+			ALandscapeStreamingProxy* LandscapeProxy = Child.Get();
+			AddActorToHLOD(Cast<AActor>(LandscapeProxy), Layer.Name);
+		}
 	}
+
 }
 
 void FHoudiniHLODLayerUtils::SetVexCode(HAPI_NodeId VexNodeId, AActor * Actor)

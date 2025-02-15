@@ -36,6 +36,7 @@
 #include "UnrealLandscapeTranslator.h"
 
 #include "HoudiniDataLayerUtils.h"
+#include "HoudiniEngineAttributes.h"
 #include "HoudiniGeoPartObject.h"
 
 #include "Landscape.h"
@@ -72,11 +73,7 @@ FUnrealLandscapeTranslator::CreateMeshOrPointsFromLandscape(
 	//--------------------------------------------------------------------------------------------------
 	HAPI_NodeId InputNodeId = -1;
 	// Create the curve SOP Node
-	const bool bUseRefCountedInputSystem = FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled();
-	if (bUseRefCountedInputSystem)
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::CreateNode(ParentNodeId, TEXT("null"), InputNodeNameString, true, &InputNodeId), false);
-	else
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::CreateInputNode(InputNodeNameString, InputNodeId, ParentNodeId), false);
+	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::CreateNode(ParentNodeId, TEXT("null"), InputNodeNameString, true, &InputNodeId), false);
 
 	// Check if we have a valid id for this new input asset.
 	if (!FHoudiniEngineUtils::IsHoudiniNodeValid(InputNodeId))
@@ -272,19 +269,18 @@ FUnrealLandscapeTranslator::CreateMeshOrPointsFromLandscape(
 	*/
 
 	// Commit the geo.
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::CommitGeo(
-		FHoudiniEngine::Get().GetSession(), DisplayGeoInfo.nodeId), false);
-	
+	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiCommitGeo(DisplayGeoInfo.nodeId), false);
+
 	return FHoudiniEngineUtils::HapiCookNode(InputNodeId, nullptr, true);
 }
 
 bool 
 FUnrealLandscapeTranslator::CreateHeightfieldFromLandscape(
 	ALandscapeProxy* LandscapeProxy,
-	bool bExportPerLayerData,
+	const FHoudiniLandscapeExportOptions& Options,
 	HAPI_NodeId& CreatedHeightfieldNodeId, 
 	const FString& InputNodeNameStr,
-	const HAPI_NodeId& ParentNodeId,
+	HAPI_NodeId ParentNodeId,
 	const bool bSetObjectTransformToWorldTransform) 
 {
   	if (!LandscapeProxy)
@@ -314,12 +310,20 @@ FUnrealLandscapeTranslator::CreateHeightfieldFromLandscape(
 	// components.
 	FTransform LandscapeTransform = FHoudiniEngineRuntimeUtils::CalculateHoudiniLandscapeTransform(LandscapeProxy);
 
-	FVector CenterOffset = FVector::ZeroVector;
-	if (!ConvertLandscapeDataToHeightfieldData(
-		HeightData, XSize, YSize, Min, Max, LandscapeTransform,
-		HeightfieldFloatValues, HeightfieldVolumeInfo, CenterOffset))
-		return false;
+	FTransform LandscapeActorTransform = LandscapeProxy->GetLandscapeActor()->GetActorTransform();
+	LandscapeTransform.SetScale3D(FVector::One());
 
+	FVector CenterOffset = FVector::ZeroVector;
+	if (!ConvertLandscapeDataToHeightFieldData(
+		HeightData, 
+		XSize, YSize, 
+		Min, Max, 
+		LandscapeActorTransform.GetScale3D(),
+		HeightfieldFloatValues, 
+		HeightfieldVolumeInfo))
+	{
+		return false;
+	}
 	//--------------------------------------------------------------------------------------------------
 	// Create the Heightfield Input Node
 	//-------------------------------------------------------------------------------------------------- 
@@ -343,28 +347,25 @@ FUnrealLandscapeTranslator::CreateHeightfieldFromLandscape(
 	ApplyAttributesToHeightfieldNode(HeightId, PartId, LandscapeProxy);
 
 	// Commit the height volume
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::CommitGeo(
-		FHoudiniEngine::Get().GetSession(), HeightId), false);
+	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiCommitGeo(HeightId), false);
 
 	//--------------------------------------------------------------------------------------------------
-	// Add  Data Layers and HLODS
+	// Add Data Layers and HLODS
 	//--------------------------------------------------------------------------------------------------
 
-	int PrevNode = FHoudiniHLODLayerUtils::AddHLODAttributes(LandscapeProxy, ParentNodeId, HeightFieldId);
-	FHoudiniDataLayerUtils::AddGroupsFromDataLayers(LandscapeProxy, ParentNodeId, PrevNode);
+	if (ParentNodeId != -1)
+	{
+		int PrevNode = FHoudiniHLODLayerUtils::AddHLODAttributes(LandscapeProxy, ParentNodeId, HeightFieldId);
+		FHoudiniDataLayerUtils::AddGroupsFromDataLayers(LandscapeProxy, ParentNodeId, PrevNode);
+	}
 
 	//--------------------------------------------------------------------------------------------------
-	// Extract and convert all the layers
+	// Define merge lambda, used below.
 	//--------------------------------------------------------------------------------------------------
-	ULandscapeInfo* LandscapeInfo = LandscapeProxy->GetLandscapeInfo();
-	if (!LandscapeInfo)
-		return false;
 
 	int32 MergeInputIndex = 2;
-	if (!ExtractAndConvertAllLandscapeLayers(LandscapeProxy, HeightFieldId, PartId, MergeId, MaskId, bExportPerLayerData, HeightfieldVolumeInfo, XSize, YSize, MergeInputIndex))
-		return false;
 
-	auto MergeInputFn = [&MergeInputIndex] (const HAPI_NodeId MergeId, const HAPI_NodeId NodeId) -> HAPI_Result
+	auto MergeInputFn = [&MergeInputIndex](const HAPI_NodeId MergeId, const HAPI_NodeId NodeId) -> HAPI_Result
 	{
 		// We had to create a new volume for this layer, so we need to connect it to the HF's merge node
 		HAPI_Result Result = FHoudiniApi::ConnectNodeInput(
@@ -378,18 +379,28 @@ FUnrealLandscapeTranslator::CreateHeightfieldFromLandscape(
 		return Result;
 	};
 
+	//--------------------------------------------------------------------------------------------------
+	// Send target layer data to Houdini.
+	//--------------------------------------------------------------------------------------------------
+
+	if (!SendTargetLayersToHoudini(LandscapeProxy, HeightFieldId, PartId, MergeId, MaskId, Options, HeightfieldVolumeInfo, XSize, YSize, MergeInputIndex))
+		return false;
+
+	//--------------------------------------------------------------------------------------------------
+	// Create height field input for each editable landscape layer
+	//--------------------------------------------------------------------------------------------------
+
 	// We need a valid landscape actor to get the edit layers
 	ALandscape* Landscape = LandscapeProxy->GetLandscapeActor();
-	if(IsValid(Landscape))
+	if(IsValid(Landscape) && Options.bExportHeightDataPerEditLayer)
 	{
-
-		//--------------------------------------------------------------------------------------------------
-		// Create heightfield input for each editable landscape layer
-		//--------------------------------------------------------------------------------------------------
 		HAPI_VolumeInfo LayerVolumeInfo;
 		FHoudiniApi::VolumeInfo_Init(&HeightfieldVolumeInfo);
-		
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5	
+		for (const FLandscapeLayer& Layer : Landscape->GetLayers())
+#else
 		for(FLandscapeLayer& Layer : Landscape->LandscapeLayers)
+#endif
 		{
 			const FString LayerVolumeName = FString::Format(TEXT("landscapelayer_{0}"), {Layer.Name.ToString()});
 			
@@ -468,20 +479,21 @@ FUnrealLandscapeTranslator::CreateHeightfieldFromLandscape(
 
 			FScopedSetLandscapeEditingLayer Scope(Landscape, Layer.Guid ); // Scope landscape access to the current layer
 
-			TArray<uint16> LayerHeightData;
-			TArray<float> LayerHeightFloatData;
 			//--------------------------------------------------------------------------------------------------
 			// Extracting height data
 			//--------------------------------------------------------------------------------------------------
+
+			TArray<uint16> LayerHeightData;
 			if (!GetLandscapeData(LandscapeProxy, LayerHeightData, XSize, YSize, Min, Max))
 				return false;
 
 			//--------------------------------------------------------------------------------------------------
 			// Convert the height uint16 data to float
 			//--------------------------------------------------------------------------------------------------
-			if (!ConvertLandscapeDataToHeightfieldData(
-				LayerHeightData, XSize, YSize, Min, Max, LandscapeTransform,
-				LayerHeightFloatData, LayerVolumeInfo, CenterOffset))
+			TArray<float> LayerHeightFloatData;
+			if (!ConvertLandscapeDataToHeightFieldData(
+				LayerHeightData, XSize, YSize, Min, Max, LandscapeActorTransform.GetScale3D(),
+				LayerHeightFloatData, LayerVolumeInfo))
 				return false;
 
 			HAPI_PartId LayerPartId = 0;
@@ -491,14 +503,12 @@ FUnrealLandscapeTranslator::CreateHeightfieldFromLandscape(
 			ApplyAttributesToHeightfieldNode(LandscapeLayerNodeId, 0, LandscapeProxy);
 
 			// Commit the volume's geo
-			HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::CommitGeo(
-			FHoudiniEngine::Get().GetSession(), LandscapeLayerNodeId), false);
+			HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiCommitGeo(LandscapeLayerNodeId), false);
 		}
 	}
 
 	HAPI_TransformEuler HAPIObjectTransform;
 	FHoudiniApi::TransformEuler_Init(&HAPIObjectTransform);
-	//FMemory::Memzero< HAPI_TransformEuler >( HAPIObjectTransform );
 	LandscapeTransform.SetScale3D(FVector::OneVector);
 	
 	if (bSetObjectTransformToWorldTransform)
@@ -510,15 +520,7 @@ FUnrealLandscapeTranslator::CreateHeightfieldFromLandscape(
 	HAPI_NodeId ParentObjNodeId = FHoudiniEngineUtils::HapiGetParentNodeId(HeightFieldId);
 	FHoudiniApi::SetObjectTransform(FHoudiniEngine::Get().GetSession(), ParentObjNodeId, &HAPIObjectTransform);
 
-	/*
-	// Commented out! As we now center the landscape transform in FHoudiniEngineRuntimeUtils::CalculateHoudiniLandscapeTransform()
-	// Since HF are centered but landscape aren't, we need to set the HF's center parameter
-	FHoudiniApi::SetParmFloatValue(FHoudiniEngine::Get().GetSession(), HeightFieldId, "t", 0, CenterOffset.X);
-	FHoudiniApi::SetParmFloatValue(FHoudiniEngine::Get().GetSession(), HeightFieldId, "t", 1, 0.0);
-	FHoudiniApi::SetParmFloatValue(FHoudiniEngine::Get().GetSession(), HeightFieldId, "t", 2, CenterOffset.Y);
-	*/
-
-	// Finally, cook the Heightfield node
+	// Finally, cook the Height field node
 	if(!FHoudiniEngineUtils::HapiCookNode(HeightFieldId, nullptr, true))
 		return false;
 
@@ -531,7 +533,7 @@ bool
 FUnrealLandscapeTranslator::CreateHeightfieldFromLandscapeComponentArray(
 	ALandscapeProxy* LandscapeProxy,
 	const TSet<ULandscapeComponent*>& SelectedComponents,
-	bool bExportPerLayerData,
+	const FHoudiniLandscapeExportOptions& Options,
 	HAPI_NodeId& CreatedHeightfieldNodeId,
 	const FString& InputNodeNameStr,
 	const HAPI_NodeId& ParentNodeId,
@@ -568,7 +570,7 @@ FUnrealLandscapeTranslator::CreateHeightfieldFromLandscapeComponentArray(
 		if ( !SelectedComponents.Contains( CurrentComponent ) )
 			return;
 		
-		if ( !CreateHeightfieldFromLandscapeComponent(LandscapeProxy, CurrentComponent, ComponentIdx, HeightfieldNodeId, HeightfieldeMergeId, MergeInputIndex, bExportPerLayerData, InputNodeNameStr, LandscapeTransform, ParentNodeId) )
+		if ( !CreateHeightfieldFromLandscapeComponent(LandscapeProxy, CurrentComponent, ComponentIdx, HeightfieldNodeId, HeightfieldeMergeId, MergeInputIndex, Options, InputNodeNameStr, LandscapeTransform, ParentNodeId) )
 			bAllComponentCreated = false;
 		
 		ComponentIdx++;
@@ -605,7 +607,7 @@ FUnrealLandscapeTranslator::CreateHeightfieldFromLandscapeComponent(
 	HAPI_NodeId& HeightFieldId, 
 	HAPI_NodeId& MergeId, 
 	int32& MergeInputIndex,
-	bool bExportPerLayerData,
+	const FHoudiniLandscapeExportOptions& Options,
 	const FString& InputNodeNameStr, 
 	const FTransform & ParentTransform,
 	const HAPI_NodeId& ParentNodeId)
@@ -639,7 +641,7 @@ FUnrealLandscapeTranslator::CreateHeightfieldFromLandscapeComponent(
 	FVector Max = Origin + Extents;
 
 	//--------------------------------------------------------------------------------------------------
-	// 2. Convert the landscape's height uint16 data to float
+	// 2. Convert the landscape's combined height uint16 data to float
 	//--------------------------------------------------------------------------------------------------
 	TArray<float> HeightfieldFloatValues;
 	HAPI_VolumeInfo HeightfieldVolumeInfo;
@@ -647,10 +649,9 @@ FUnrealLandscapeTranslator::CreateHeightfieldFromLandscapeComponent(
 	FTransform LandscapeComponentTransform = LandscapeComponent->GetComponentTransform();
 
 	FVector CenterOffset = FVector::ZeroVector;
-	if ( !ConvertLandscapeDataToHeightfieldData(
-		HeightData, XSize, YSize, Min, Max, LandscapeComponentTransform,
-		HeightfieldFloatValues, HeightfieldVolumeInfo,
-		CenterOffset ) )
+	if ( !ConvertLandscapeDataToHeightFieldData(
+		HeightData, XSize, YSize, Min, Max, LandscapeComponentTransform.GetScale3D(),
+		HeightfieldFloatValues, HeightfieldVolumeInfo) )
 		return false;
 
 	// We need to modify the Volume's position to the Component's position relative to the Landscape's position
@@ -692,7 +693,7 @@ FUnrealLandscapeTranslator::CreateHeightfieldFromLandscapeComponent(
 	}
 	else
 	{
-	    // Heightfield node was previously created, create additionnal height and a mask volumes for it
+	    // Heightfield node was previously created, create additional height and a mask volumes for it
 	    FHoudiniApi::CreateHeightfieldInputVolumeNode(
 	        FHoudiniEngine::Get().GetSession(),
 	        HeightFieldId, &HeightId, "height", XSize, YSize, 1.0f );
@@ -712,7 +713,7 @@ FUnrealLandscapeTranslator::CreateHeightfieldFromLandscapeComponent(
 	}
 
 	//--------------------------------------------------------------------------------------------------
-	// 4. Set the HeightfieldData in Houdini
+	// 4. Set the Height field data in Houdini
 	//--------------------------------------------------------------------------------------------------    
 	// Set the Height volume's data
 	HAPI_PartId PartId = 0;
@@ -726,26 +727,13 @@ FUnrealLandscapeTranslator::CreateHeightfieldFromLandscapeComponent(
 	ApplyAttributesToHeightfieldNode(HeightId, PartId, LandscapeProxy);
 	
 	// Commit the height volume
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::CommitGeo(
-	    FHoudiniEngine::Get().GetSession(), HeightId), false);
+	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiCommitGeo(HeightId), false);
 
 	//--------------------------------------------------------------------------------------------------
 	// 5. Extract and convert all the layers to HF masks
 	//--------------------------------------------------------------------------------------------------
-	if (!ExtractAndConvertAllLandscapeLayers(LandscapeProxy, HeightFieldId, PartId, MergeId, MaskId, bExportPerLayerData, HeightfieldVolumeInfo, XSize, YSize, MergeInputIndex))
+	if (!SendTargetLayersToHoudini(LandscapeProxy, HeightFieldId, PartId, MergeId, MaskId, Options, HeightfieldVolumeInfo, XSize, YSize, MergeInputIndex))
 		return false;
-
-	/*
-	// Commented out! As we now center the landscape transform in FHoudiniEngineRuntimeUtils::CalculateHoudiniLandscapeTransform()
-	if ( CreatedHeightfieldNode )
-	{
-		// Since HF are centered but landscape arent, we need to set the HF's center parameter
-		// Do it only once after creating the Heightfield node
-		FHoudiniApi::SetParmFloatValue(FHoudiniEngine::Get().GetSession(), HeightFieldId, "t", 0, CenterOffset.X);
-		FHoudiniApi::SetParmFloatValue(FHoudiniEngine::Get().GetSession(), HeightFieldId, "t", 1, 0.0);
-		FHoudiniApi::SetParmFloatValue(FHoudiniEngine::Get().GetSession(), HeightFieldId, "t", 2, CenterOffset.Y);
-	}
-	*/
 
 	// Finally, cook the Heightfield node
 	if (!FHoudiniEngineUtils::HapiCookNode(HeightFieldId, nullptr, true))
@@ -761,7 +749,6 @@ FUnrealLandscapeTranslator::CreateInputNodeForLandscape(
 	const FString& InputNodeNameStr,
 	const FString& HeightFieldName,
 	const FTransform& LandscapeTransform,
-	FVector& CenterOffset,
 	HAPI_NodeId& HeightId,
 	HAPI_PartId& PartId,
 	HAPI_NodeId& HeightFieldId,
@@ -786,9 +773,9 @@ FUnrealLandscapeTranslator::CreateInputNodeForLandscape(
 	//--------------------------------------------------------------------------------------------------
 	TArray<float> HeightfieldFloatValues;
 	
-	if (!ConvertLandscapeDataToHeightfieldData(
-		HeightData, XSize, YSize, Min, Max, LandscapeTransform,
-		HeightfieldFloatValues, HeightfieldVolumeInfo, CenterOffset))
+	if (!ConvertLandscapeDataToHeightFieldData(
+		HeightData, XSize, YSize, Min, Max, LandscapeTransform.GetScale3D(),
+		HeightfieldFloatValues, HeightfieldVolumeInfo))
 		return false;
 
 	//--------------------------------------------------------------------------------------------------
@@ -817,7 +804,6 @@ FUnrealLandscapeTranslator::CreateInputNodeForLandscapeObject(
 	FUnrealObjectInputHandle& OutHandle,
 	const bool& bInputNodesCanBeDeleted)
 {
-	const bool bUseRefCountedInputSystem = FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled();
 	FString FinalInputNodeName = InputNodeName;
 	EHoudiniLandscapeExportType ExportType = InInput->GetLandscapeExportType();
 
@@ -825,14 +811,14 @@ FUnrealLandscapeTranslator::CreateInputNodeForLandscapeObject(
 	
 	const FHoudiniInputObjectSettings& InputSettings = InInput->GetInputSettings();
 
-	const bool bApplyWorldTransformToMeshOrPointCloudData = !bUseRefCountedInputSystem;
-	const bool bSetObjectTransformToWorldTransform = !bUseRefCountedInputSystem;
+	const bool bApplyWorldTransformToMeshOrPointCloudData = false;
+	const bool bSetObjectTransformToWorldTransform = false;
 
 	bool bExportSelectionOnly = InputSettings.bLandscapeExportSelectionOnly;
 	bool bLandscapeAutoSelectComponent = InputSettings.bLandscapeAutoSelectComponent;
 
 	// Get selected components if bLandscapeExportSelectionOnly or bLandscapeAutoSelectComponent is true
-	TSet<ULandscapeComponent*> SelectedComponents;
+	TSet<TObjectPtr<ULandscapeComponent>> SelectedComponents;
 	if (bExportSelectionOnly)
 	{
 		InInput->UpdateLandscapeInputSelection();
@@ -842,7 +828,6 @@ FUnrealLandscapeTranslator::CreateInputNodeForLandscapeObject(
 	FUnrealObjectInputHandle ParentHandle;
 	HAPI_NodeId ParentNodeId = -1;
 
-	if (bUseRefCountedInputSystem)
 	{
 		const FUnrealObjectInputOptions Options = FUnrealObjectInputOptions::MakeOptionsForLandscapeData(
 			InputSettings, bExportSelectionOnly ? &SelectedComponents : nullptr);
@@ -940,26 +925,37 @@ FUnrealLandscapeTranslator::CreateInputNodeForLandscapeObject(
 		// Ensure we destroy any (Houdini) input nodes before clobbering this object with a new heightfield.
 		//DestroyInputNodes(InInput, InInput->GetInputType());
 
+		FHoudiniLandscapeExportOptions Options;
+		Options.bExportHeightDataPerEditLayer = InInput->IsEditLayerHeightExportEnabled();
+		Options.bExportMergedPaintLayers = InInput->IsMergedPaintLayerExportEnabled();
+		Options.bExportPaintLayersPerEditLayer = InInput->IsPaintLayerPerEditLayerExportEnabled();
+
 		int32 NumComponents = InLandscape->LandscapeComponents.Num();
-		if (!bExportSelectionOnly || (SelectedComponents.Num() == NumComponents))
+		if(!bExportSelectionOnly || (SelectedComponents.Num() == NumComponents))
+		{
 			// Export the whole landscape and its layer as a single heightfield node
 			bSuccess = FUnrealLandscapeTranslator::CreateHeightfieldFromLandscape(
-				InLandscape, 
-				InInput->IsPerLayerExportEnabled(), 
-				InputNodeId, 
-				FinalInputNodeName, 
+				InLandscape,
+				Options,
+				InputNodeId,
+				FinalInputNodeName,
 				ParentNodeId,
 				bSetObjectTransformToWorldTransform);
+		}
 		else
+		{
+			TSet<ULandscapeComponent*> SelectedLandscapeComponents = FHoudiniEngineUtils::RemoveObjectPtr(SelectedComponents);
+
 			// Each selected landscape component will be exported as separate volumes in a single heightfield
 			bSuccess = FUnrealLandscapeTranslator::CreateHeightfieldFromLandscapeComponentArray(
-				InLandscape, 
-				SelectedComponents, 
-				InInput->IsPerLayerExportEnabled(), 
-				InputNodeId, 
-				FinalInputNodeName, 
+				InLandscape,
+				SelectedLandscapeComponents,
+				Options,
+				InputNodeId,
+				FinalInputNodeName,
 				ParentNodeId,
 				bSetObjectTransformToWorldTransform);
+		}
 	}
 	else
 	{
@@ -978,15 +974,13 @@ FUnrealLandscapeTranslator::CreateInputNodeForLandscapeObject(
 	if (!bSuccess)
 		return false;
 
-	if (bUseRefCountedInputSystem)
 	{
 		FUnrealObjectInputHandle Handle;
 		HAPI_NodeId InputObjectNodeId = FHoudiniEngineUtils::HapiGetParentNodeId(InputNodeId);
-		if (FUnrealObjectInputUtils::AddNodeOrUpdateNode(Identifier, InputNodeId, Handle, InputObjectNodeId))
+		if (FUnrealObjectInputUtils::AddNodeOrUpdateNode(Identifier, InputNodeId, Handle, InputObjectNodeId, nullptr, bInputNodesCanBeDeleted))
 			OutHandle = Handle;
 	}
 
-	// dfdf
 	return true;
 }
 
@@ -1226,16 +1220,15 @@ FUnrealLandscapeTranslator::ApplyAttributesToHeightfieldNode(
 
 
 bool
-FUnrealLandscapeTranslator::ConvertLandscapeDataToHeightfieldData(
+FUnrealLandscapeTranslator::ConvertLandscapeDataToHeightFieldData(
 	const TArray<uint16>& IntHeightData,
-	const int32& XSize,
-	const int32& YSize,
+	int32 XSize,
+	int32 YSize,
 	FVector Min,
 	FVector Max,
-	const FTransform& LandscapeTransform,
+	const FVector3d & LandscapeActorScale,
 	TArray<float>& HeightfieldFloatValues,
-	HAPI_VolumeInfo& HeightfieldVolumeInfo,
-	FVector& CenterOffset)
+	HAPI_VolumeInfo& HeightfieldVolumeInfo)
 {
 	HeightfieldFloatValues.Empty(); 
 
@@ -1256,9 +1249,8 @@ FUnrealLandscapeTranslator::ConvertLandscapeDataToHeightfieldData(
 		bUseDefaultUE4Scaling = HoudiniRuntimeSettings->MarshallingLandscapesUseDefaultUnrealScaling;
 
 	//--------------------------------------------------------------------------------------------------
-	// 1. Convert values to float
+	// Convert values to float
 	//--------------------------------------------------------------------------------------------------
-
 
 	// Convert the min/max values from cm to meters
 	Min /= 100.0;
@@ -1270,11 +1262,11 @@ FUnrealLandscapeTranslator::ConvertLandscapeDataToHeightfieldData(
 
 	// Spacing used to convert from uint16 to meters
 	double ZSpacing = 512.0 / ((double)UINT16_MAX);
-	ZSpacing *= ((double)LandscapeTransform.GetScale3D().Z / 100.0);
+	ZSpacing *= LandscapeActorScale.Z / 100.0;
 
 	// Center value in meters (Landscape ranges from [-255:257] meters at default scale
 	double ZCenterOffset = 32767;
-	double ZPositionOffset = LandscapeTransform.GetLocation().Z / 100.0f;
+
 	// Convert the Int data to Float
 	HeightfieldFloatValues.SetNumUninitialized(SizeInPoints);
 	for (int32 nY = 0; nY < HoudiniYSize; nY++)
@@ -1295,53 +1287,33 @@ FUnrealLandscapeTranslator::ConvertLandscapeDataToHeightfieldData(
 	}
 
 	//--------------------------------------------------------------------------------------------------
-	// 2. Convert the Unreal Transform to a HAPI_transform
+	// Set the Hapi Transform. Houdini expects the scale to be set here, but we set the position
+	// and rotation on the Geometry nodes, so clear here.
 	//--------------------------------------------------------------------------------------------------
+
 	HAPI_Transform HapiTransform;
 	FHoudiniApi::Transform_Init(&HapiTransform);
-	//FMemory::Memzero< HAPI_Transform >( HapiTransform );
-	{
-		FQuat Rotation = LandscapeTransform.GetRotation();
-		if (Rotation != FQuat::Identity)
-		{
-			//Swap(ObjectRotation.Y, ObjectRotation.Z);
-			HapiTransform.rotationQuaternion[0] = Rotation.X;
-			HapiTransform.rotationQuaternion[1] = Rotation.Z;
-			HapiTransform.rotationQuaternion[2] = Rotation.Y;
-			HapiTransform.rotationQuaternion[3] = -Rotation.W;
-		}
-		else
-		{
-			HapiTransform.rotationQuaternion[0] = 0;
-			HapiTransform.rotationQuaternion[1] = 0;
-			HapiTransform.rotationQuaternion[2] = 0;
-			HapiTransform.rotationQuaternion[3] = 1;
-		}
 
-		// Heightfield are centered, landscapes are not
-		// Commented out! As we now center the landscape transform in FHoudiniEngineRuntimeUtils::CalculateHoudiniLandscapeTransform()
-		// CenterOffset = (Max - Min) * 0.5f;
+	HapiTransform.rotationQuaternion[0] = 0;
+	HapiTransform.rotationQuaternion[1] = 0;
+	HapiTransform.rotationQuaternion[2] = 0;
+	HapiTransform.rotationQuaternion[3] = 1;
+	HapiTransform.position[1] = 0.0f;
+	HapiTransform.position[0] = 0.0f;
+	HapiTransform.position[2] = 0.0f;
 
-		// Unreal XYZ becomes Houdini YXZ (since heightfields are also rotated due the ZX transform) 
-		//FVector Position = LandscapeTransform.GetLocation() / 100.0f;
-		HapiTransform.position[1] = 0.0f;//Position.X + CenterOffset.X;
-		HapiTransform.position[0] = 0.0f;//Position.Y + CenterOffset.Y;
-		HapiTransform.position[2] = 0.0f;
+	HapiTransform.scale[0] = LandscapeActorScale.Y * 0.5f * HoudiniXSize / 100.0f;
+	HapiTransform.scale[1] = LandscapeActorScale.X * 0.5f * HoudiniYSize / 100.0f;
+	HapiTransform.scale[2] = 0.5f;
+	if (bUseDefaultUE4Scaling)
+			HapiTransform.scale[2] *= LandscapeActorScale.Z;
 
-		FVector Scale = LandscapeTransform.GetScale3D() / 100.0f;
-		HapiTransform.scale[0] = Scale.X * 0.5f * HoudiniXSize;
-		HapiTransform.scale[1] = Scale.Y * 0.5f * HoudiniYSize;
-		HapiTransform.scale[2] = 0.5f;
-		if (bUseDefaultUE4Scaling)
-			HapiTransform.scale[2] *= Scale.Z;
-
-		HapiTransform.shear[0] = 0.0f;
-		HapiTransform.shear[1] = 0.0f;
-		HapiTransform.shear[2] = 0.0f;
-	}
-
+	HapiTransform.shear[0] = 0.0f;
+	HapiTransform.shear[1] = 0.0f;
+	HapiTransform.shear[2] = 0.0f;
+	
 	//--------------------------------------------------------------------------------------------------
-	// 3. Fill the volume info
+	// Fill the volume info
 	//--------------------------------------------------------------------------------------------------
 	HeightfieldVolumeInfo.xLength = HoudiniXSize;
 	HeightfieldVolumeInfo.yLength = HoudiniYSize;
@@ -1374,7 +1346,7 @@ FUnrealLandscapeTranslator::CreateHeightfieldInputNode(
 	HAPI_NodeId& HeightNodeId, 
 	HAPI_NodeId& MaskNodeId, 
 	HAPI_NodeId& MergeNodeId,
-	const HAPI_NodeId& ParentNodeId)
+	HAPI_NodeId ParentNodeId)
 {
 	// Make sure the Heightfield node doesnt already exists
 	if (HeightfieldNodeId != -1)
@@ -1401,6 +1373,8 @@ FUnrealLandscapeTranslator::SetHeightfieldData(
 	const HAPI_VolumeInfo& VolumeInfo,
 	const FString& HeightfieldName)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FUnrealLandscapeTranslator::SetHeightfieldData);
+
 	// Cook the node to get proper infos on it
 	if(!FHoudiniEngineUtils::HapiCookNode(VolumeNodeId, nullptr, true))
 		return false;
@@ -1408,7 +1382,7 @@ FUnrealLandscapeTranslator::SetHeightfieldData(
 	// Read the geo/part/volume info from the volume node
 	HAPI_GeoInfo GeoInfo;
 	FHoudiniApi::GeoInfo_Init(&GeoInfo);
-	//FMemory::Memset< HAPI_GeoInfo >(GeoInfo, 0);
+
 	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetGeoInfo(
 		FHoudiniEngine::Get().GetSession(),
 		VolumeNodeId, &GeoInfo), false);
@@ -1463,8 +1437,8 @@ bool FUnrealLandscapeTranslator::AddLandscapeMaterialAttributesToVolume(
 		if (HAPI_RESULT_SUCCESS == Result)
 		{
 			// Set the attribute's string data
-			Result = FHoudiniEngineUtils::HapiSetAttributeStringData(
-				InLandscapeMaterialString, VolumeNodeId, PartId, HAPI_UNREAL_ATTRIB_MATERIAL, AttributeInfoMaterial);
+			FHoudiniHapiAccessor Accessor(VolumeNodeId, PartId, HAPI_UNREAL_ATTRIB_MATERIAL);
+			HOUDINI_CHECK_RETURN(Accessor.SetAttributeUniqueData(AttributeInfoMaterial, InLandscapeMaterialString), false);
 		}
 
 		if (Result != HAPI_RESULT_SUCCESS)
@@ -1499,8 +1473,8 @@ bool FUnrealLandscapeTranslator::AddLandscapeMaterialAttributesToVolume(
 		if (Result == HAPI_RESULT_SUCCESS)
 		{
 			// Set the attribute's string data
-			Result = FHoudiniEngineUtils::HapiSetAttributeStringData(
-				InLandscapeMaterialString, VolumeNodeId, PartId, HAPI_UNREAL_ATTRIB_MATERIAL_HOLE, AttributeInfoMaterial);
+			FHoudiniHapiAccessor Accessor(VolumeNodeId, PartId, HAPI_UNREAL_ATTRIB_MATERIAL_HOLE);
+			HOUDINI_CHECK_RETURN(Accessor.SetAttributeUniqueData(AttributeInfoMaterial, InLandscapeMaterialString), false);
 		}
 
 		if (Result != HAPI_RESULT_SUCCESS)
@@ -1535,8 +1509,8 @@ bool FUnrealLandscapeTranslator::AddLandscapeMaterialAttributesToVolume(
 		if (Result == HAPI_RESULT_SUCCESS)
 		{
 			// Set the attribute's string data
-			Result = FHoudiniEngineUtils::HapiSetAttributeStringData(
-				InPhysMatlString, VolumeNodeId, PartId, HAPI_UNREAL_ATTRIB_PHYSICAL_MATERIAL, AttributeInfoMaterial);
+			FHoudiniHapiAccessor Accessor(VolumeNodeId, PartId, HAPI_UNREAL_ATTRIB_PHYSICAL_MATERIAL);
+			HOUDINI_CHECK_RETURN(Accessor.SetAttributeUniqueData(AttributeInfoMaterial, InPhysMatlString), false);
 		}
 
 		if (Result != HAPI_RESULT_SUCCESS)
@@ -2013,10 +1987,11 @@ FUnrealLandscapeTranslator::AddLandscapePositionAttribute(const HAPI_NodeId& Nod
 		FHoudiniEngine::Get().GetSession(), NodeId, 0,
 		HAPI_UNREAL_ATTRIB_POSITION, &AttributeInfoPointPosition), false);
 
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeFloatData(
-		(const float*)LandscapePositionArray.GetData(), NodeId, 0, HAPI_UNREAL_ATTRIB_POSITION, AttributeInfoPointPosition), false);
 
-	return true;
+	FHoudiniHapiAccessor Accessor(NodeId, 0, HAPI_UNREAL_ATTRIB_POSITION);
+	bool bSuccess = Accessor.SetAttributeData(AttributeInfoPointPosition, (const float*)LandscapePositionArray.GetData());
+
+	return bSuccess;
 }
 
 bool 
@@ -2039,10 +2014,10 @@ FUnrealLandscapeTranslator::AddLandscapeNormalAttribute(const HAPI_NodeId& NodeI
 		FHoudiniEngine::Get().GetSession(), NodeId,
 		0, HAPI_UNREAL_ATTRIB_NORMAL, &AttributeInfoPointNormal), false);
 
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeFloatData(
-		(const float*)LandscapeNormalArray.GetData(), NodeId, 0, HAPI_UNREAL_ATTRIB_NORMAL, AttributeInfoPointNormal), false);
+	FHoudiniHapiAccessor Accessor(NodeId, 0, HAPI_UNREAL_ATTRIB_NORMAL);
+	bool bSuccess = Accessor.SetAttributeData(AttributeInfoPointNormal, (const float*)LandscapeNormalArray.GetData());
 
-	return true;
+	return bSuccess;
 }
 
 bool 
@@ -2065,10 +2040,10 @@ FUnrealLandscapeTranslator::AddLandscapeUVAttribute(const HAPI_NodeId& NodeId, c
 		FHoudiniEngine::Get().GetSession(), NodeId,
 		0, HAPI_UNREAL_ATTRIB_UV, &AttributeInfoPointUV), false);
 
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeFloatData(
-		(const float*)LandscapeUVArray.GetData(), NodeId, 0, HAPI_UNREAL_ATTRIB_UV, AttributeInfoPointUV), false);
+	FHoudiniHapiAccessor Accessor(NodeId, 0, HAPI_UNREAL_ATTRIB_UV);
+	bool bSuccess = Accessor.SetAttributeData(AttributeInfoPointUV, (const float*)LandscapeUVArray.GetData());
 
-	return true;
+	return bSuccess;
 }
 
 bool 
@@ -2092,8 +2067,8 @@ FUnrealLandscapeTranslator::AddLandscapeComponentVertexIndicesAttribute(const HA
 		0, HAPI_UNREAL_ATTRIB_LANDSCAPE_VERTEX_INDEX,
 		&AttributeInfoPointLandscapeComponentVertexIndices), false);
 
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeIntData(
-		(const int*)LandscapeComponentVertexIndicesArray.GetData(), NodeId, 0, HAPI_UNREAL_ATTRIB_LANDSCAPE_VERTEX_INDEX, AttributeInfoPointLandscapeComponentVertexIndices), false);
+	FHoudiniHapiAccessor Accessor(NodeId, 0, HAPI_UNREAL_ATTRIB_LANDSCAPE_VERTEX_INDEX);
+	HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfoPointLandscapeComponentVertexIndices, (const int*)LandscapeComponentVertexIndicesArray.GetData()), false);
 
 	return true;
 }
@@ -2174,8 +2149,8 @@ FUnrealLandscapeTranslator::AddLandscapeLightmapColorAttribute(const HAPI_NodeId
 		FHoudiniEngine::Get().GetSession(), NodeId,
 		0, HAPI_UNREAL_ATTRIB_LIGHTMAP_COLOR, &AttributeInfoPointLightmapColor), false);
 
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeFloatData(
-		(const float*)LandscapeLightmapValues.GetData(), NodeId, 0, HAPI_UNREAL_ATTRIB_LIGHTMAP_COLOR, AttributeInfoPointLightmapColor, true), false);
+	FHoudiniHapiAccessor Accessor(NodeId, 0, HAPI_UNREAL_ATTRIB_LIGHTMAP_COLOR);
+	bool bSuccess = Accessor.SetAttributeData(AttributeInfoPointLightmapColor, (const float*)LandscapeLightmapValues.GetData());
 
 	return true;
 }
@@ -2289,9 +2264,8 @@ FUnrealLandscapeTranslator::AddLandscapeMeshIndicesAndMaterialsAttribute(
                                            NodeId, 0, HAPI_UNREAL_ATTRIB_MATERIAL, &AttributeInfoPrimitiveMaterial),
                                        false);
 
-            HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeStringMap(FaceMaterials,
-                                           NodeId, 0, HAPI_UNREAL_ATTRIB_MATERIAL, AttributeInfoPrimitiveMaterial),
-                                       false);
+			FHoudiniHapiAccessor Accessor(NodeId, 0, HAPI_UNREAL_ATTRIB_MATERIAL);
+			HOUDINI_CHECK_RETURN(Accessor.SetAttributeStringMap(AttributeInfoPrimitiveMaterial, FaceMaterials), false);
         }
 
         if (FaceHoleMaterials.HasEntries())
@@ -2312,11 +2286,8 @@ FUnrealLandscapeTranslator::AddLandscapeMeshIndicesAndMaterialsAttribute(
                                            &AttributeInfoPrimitiveMaterialHole),
                                        false);
 
-            HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeStringMap(
-                                           FaceHoleMaterials,
-                                           NodeId, 0, HAPI_UNREAL_ATTRIB_MATERIAL_HOLE,
-                                           AttributeInfoPrimitiveMaterialHole),
-                                       false);
+			FHoudiniHapiAccessor Accessor(NodeId, 0, HAPI_UNREAL_ATTRIB_MATERIAL_HOLE);
+			HOUDINI_CHECK_RETURN(Accessor.SetAttributeStringMap(AttributeInfoPrimitiveMaterialHole, FaceHoleMaterials), false);
         }
 	}		
 
@@ -2346,8 +2317,8 @@ FUnrealLandscapeTranslator::AddLandscapeGlobalMaterialAttribute(
 		FHoudiniEngine::Get().GetSession(), NodeId, 0,
 		HAPI_UNREAL_ATTRIB_MATERIAL, &AttributeInfoDetailMaterial), false);
 
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeStringData(
-		MaterialInterface->GetPathName(), NodeId, 0, HAPI_UNREAL_ATTRIB_MATERIAL, AttributeInfoDetailMaterial), false);
+	FHoudiniHapiAccessor Accessor(NodeId, 0, HAPI_UNREAL_ATTRIB_MATERIAL);
+	HOUDINI_CHECK_RETURN(Accessor.SetAttributeUniqueData(AttributeInfoDetailMaterial, MaterialInterface->GetPathName()), false);
 
 	// If there's a global landscape hole material, we marshall it as detail.
 	UMaterialInterface * HoleMaterialInterface = LandscapeProxy->GetLandscapeHoleMaterial();
@@ -2366,8 +2337,8 @@ FUnrealLandscapeTranslator::AddLandscapeGlobalMaterialAttribute(
 		NodeId, 0, HAPI_UNREAL_ATTRIB_MATERIAL_HOLE,
 		&AttributeInfoDetailMaterialHole), false);
 
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeStringData(
-		HoleMaterialInterface->GetPathName(), NodeId, 0, HAPI_UNREAL_ATTRIB_MATERIAL_HOLE, AttributeInfoDetailMaterialHole), false);
+	Accessor.Init(NodeId, 0, HAPI_UNREAL_ATTRIB_MATERIAL_HOLE);
+	HOUDINI_CHECK_RETURN(Accessor.SetAttributeUniqueData(AttributeInfoDetailMaterialHole, HoleMaterialInterface->GetPathName()), false);
 
 	return true;
 }
@@ -2396,8 +2367,8 @@ FUnrealLandscapeTranslator::AddLandscapeLayerAttribute(
 		TCHAR_TO_ANSI(*LayerName),
 		&AttributeInfoLayer), false);
 
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeFloatData(
-		LandscapeLayerArray, NodeId, 0, LayerName, AttributeInfoLayer, true), false);
+	FHoudiniHapiAccessor Accessor(NodeId, 0, TCHAR_TO_ANSI(*LayerName));
+	HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfoLayer, LandscapeLayerArray), false);
 
 	return true;
 }
@@ -2462,32 +2433,47 @@ FUnrealLandscapeTranslator::CreateVolumeLayer(ALandscapeProxy* LandscapeProxy,
 	ApplyAttributesToHeightfieldNode(LayerVolumeNodeId, PartId, LandscapeProxy);
 
 	// Commit the volume's geo
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::CommitGeo(FHoudiniEngine::Get().GetSession(), LayerVolumeNodeId), -1);
+	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiCommitGeo(LayerVolumeNodeId), -1);
+
 	return LayerVolumeNodeId;
 
 }
 
-bool FUnrealLandscapeTranslator::ExtractAndConvertAllLandscapeLayers(
+bool FUnrealLandscapeTranslator::SendTargetLayersToHoudini(
 	ALandscapeProxy* LandscapeProxy,
 	HAPI_NodeId HeightFieldId,
 	HAPI_PartId PartId,
 	HAPI_NodeId MergeId,
 	HAPI_NodeId MaskId,
-	bool bExportPerLayerData,
-	const HAPI_VolumeInfo& HeightfieldVolumeInfo,
+	const FHoudiniLandscapeExportOptions& Options,
+	const HAPI_VolumeInfo& HeightFieldVolumeInfo,
 	int32 XSize,
 	int32 YSize,
 	int32& OutMergeInputIndex)
 {
-	bool bSuccess = ExtractAndConvertMainEditLayer(LandscapeProxy, HeightFieldId, PartId, MergeId, MaskId, HeightfieldVolumeInfo, XSize, YSize, OutMergeInputIndex);
 
-	if (bExportPerLayerData)
-		bSuccess &= ExtractAndConvertEditLayers(LandscapeProxy, HeightFieldId, PartId, MergeId, MaskId, HeightfieldVolumeInfo, XSize, YSize, OutMergeInputIndex);
+	bool bSuccess = true;
+
+	// Send target layers to Houdini. Note, we always need to create and commit a Mask or the Volume Info won't function
+	// correctly.
+	if (Options.bExportMergedPaintLayers)
+	{
+		bSuccess &= SendCombinedTargetLayersToHoudini(LandscapeProxy, HeightFieldId, PartId, MergeId, MaskId, HeightFieldVolumeInfo, XSize, YSize, OutMergeInputIndex);
+	}
+	else
+	{
+		InitDefaultHeightfieldMask(HeightFieldVolumeInfo, MaskId);
+		ApplyAttributesToHeightfieldNode(MaskId, PartId, LandscapeProxy);
+		HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiCommitGeo(MaskId), false);
+	}
+
+	if (Options.bExportPaintLayersPerEditLayer)
+		bSuccess &= SendAllEditLayerTargetLayersToHoudini(LandscapeProxy, HeightFieldId, PartId, MergeId, MaskId, HeightFieldVolumeInfo, XSize, YSize, OutMergeInputIndex);
 
 	return bSuccess;
 }
 
-bool FUnrealLandscapeTranslator::ExtractAndConvertMainEditLayer(
+bool FUnrealLandscapeTranslator::SendCombinedTargetLayersToHoudini(
 	ALandscapeProxy* LandscapeProxy,
 	HAPI_NodeId HeightFieldId,
 	HAPI_PartId PartId,
@@ -2498,6 +2484,8 @@ bool FUnrealLandscapeTranslator::ExtractAndConvertMainEditLayer(
 	int32 YSize,
 	int32 & OutMergeInputIndex)
 {
+	// This function sends the combined target (paint) layers to Houdini.
+	// "Combined" means that all target layers in all edit layers are combined.
 
 	ULandscapeInfo* LandscapeInfo = LandscapeProxy->GetLandscapeInfo();
 	if (!LandscapeInfo)
@@ -2561,13 +2549,13 @@ bool FUnrealLandscapeTranslator::ExtractAndConvertMainEditLayer(
 		ApplyAttributesToHeightfieldNode(MaskId, PartId, LandscapeProxy);
 
 		// Commit the mask volume's geo.
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::CommitGeo(FHoudiniEngine::Get().GetSession(), MaskId), false);
+		HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiCommitGeo(MaskId), false);		
 	}
 
 	return true;
 }
 
-bool FUnrealLandscapeTranslator::ExtractAndConvertEditLayers(
+bool FUnrealLandscapeTranslator::SendAllEditLayerTargetLayersToHoudini(
 	ALandscapeProxy* LandscapeProxy,
 	HAPI_NodeId HeightFieldId,
 	HAPI_PartId PartId,
@@ -2577,8 +2565,9 @@ bool FUnrealLandscapeTranslator::ExtractAndConvertEditLayers(
 	int32 XSize,
 	int32 YSize,
 	int32& OutMergeInputIndex)
-
 {
+	// This function sends the Target (paint) layer for each Edit Layer separately to Houdini.
+
 	ULandscapeInfo* LandscapeInfo = LandscapeProxy->GetLandscapeInfo();
 	if (!LandscapeInfo)
 		return false;
@@ -2589,13 +2578,19 @@ bool FUnrealLandscapeTranslator::ExtractAndConvertEditLayers(
 		int32 NumTargetLayers = LandscapeInfo->Layers.Num();
 		for (int32 TargetLayerIndex = 0; TargetLayerIndex < NumTargetLayers; TargetLayerIndex++)
 		{
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
+			const FName & EditLayerName = LandscapeProxy->GetLandscapeActor()->GetLayerConst(EditLayerIndex)->Name;
+#else
 			const FName & EditLayerName = LandscapeProxy->GetLandscapeActor()->GetLayer(EditLayerIndex)->Name;
+#endif
 			const FName & TargetLayerName = LandscapeInfo->Layers[TargetLayerIndex].GetLayerName();
 
 			FHoudiniExtents Extents = FHoudiniLandscapeUtils::GetLandscapeExtents(LandscapeProxy);
 			TArray<uint8_t> LayerData = FHoudiniLandscapeUtils::GetLayerData(Landscape, Extents, EditLayerName, TargetLayerName);
 
-			FLinearColor Color = Landscape->GetLandscapeInfo()->GetLayerInfoByName(TargetLayerName)->LayerUsageDebugColor;
+			ULandscapeLayerInfoObject * LayerInfoObject = Landscape->GetLandscapeInfo()->GetLayerInfoByName(TargetLayerName);
+
+			FLinearColor Color = LayerInfoObject ? LayerInfoObject->LayerUsageDebugColor : FLinearColor::White;
 
 			TArray<float> CurrentLayerFloatData;
 			if (!ConvertLandscapeLayerDataToHeightfieldData(LayerData, XSize, YSize, Color, CurrentLayerFloatData))

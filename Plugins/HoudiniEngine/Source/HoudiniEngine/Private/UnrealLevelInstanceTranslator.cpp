@@ -27,6 +27,7 @@
 #include "UnrealLevelInstanceTranslator.h"
 #include "LevelInstance/LevelInstanceActor.h"
 #include "HoudiniEngine.h"
+#include "HoudiniEngineAttributes.h"
 #include "HoudiniEngineUtils.h"
 #include "UnrealObjectInputRuntimeTypes.h"
 #include "UnrealObjectInputRuntimeUtils.h"
@@ -62,8 +63,6 @@ FUnrealLevelInstanceTranslator::CreateNodeForLevelInstance(
 	FUnrealObjectInputHandle& OutHandle,
 	const bool bInputNodesCanBeDeleted)
 {
-	const bool bUseRefCountedInputSystem = FUnrealObjectInputRuntimeUtils::IsRefCountedInputSystemEnabled();
-
 	FUnrealObjectInputIdentifier Identifier;
 	FUnrealObjectInputIdentifier GeoNodeIdentifier;
 	FUnrealObjectInputHandle ParentHandle;
@@ -71,7 +70,6 @@ FUnrealLevelInstanceTranslator::CreateNodeForLevelInstance(
 	FString FinalInputNodeName = InputNodeName;
 	HAPI_NodeId ParentNodeId = -1;
 
-	if (bUseRefCountedInputSystem)
 	{
 		FUnrealObjectInputOptions Options;
 		Options.bExportLevelInstanceContent = false;
@@ -138,10 +136,9 @@ FUnrealLevelInstanceTranslator::CreateNodeForLevelInstance(
 
 	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::SetPartInfo(FHoudiniEngine::Get().GetSession(), InputNodeId, 0, &Part), false);
 
-	if (bUseRefCountedInputSystem)
 	{
 		FUnrealObjectInputHandle Handle;
-		if (FUnrealObjectInputUtils::AddNodeOrUpdateNode(Identifier, InputNodeId, Handle, InputObjectNodeId))
+		if (FUnrealObjectInputUtils::AddNodeOrUpdateNode(Identifier, InputNodeId, Handle, InputObjectNodeId, nullptr, bInputNodesCanBeDeleted))
 			OutHandle = Handle;
 	}
 
@@ -163,8 +160,12 @@ bool FUnrealLevelInstanceTranslator::AddStringPointAttribute(HAPI_NodeId NodeId,
 	AttributeInfo.typeInfo = HAPI_ATTRIBUTE_TYPE_NONE;
 
 	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::AddAttribute(FHoudiniEngine::Get().GetSession(), NodeId, 0, Name, &AttributeInfo), false);
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiSetAttributeStringData(Data, NodeId, 0, FString(Name), AttributeInfo), false);
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::CommitGeo(FHoudiniEngine::Get().GetSession(), NodeId), false);
+
+	FHoudiniHapiAccessor Accessor(NodeId, 0, Name);
+	HOUDINI_CHECK_RETURN(Accessor.SetAttributeData(AttributeInfo, Data), false);
+
+	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiCommitGeo(NodeId), false);
+
 	return true;
 }
 
@@ -184,11 +185,13 @@ bool FUnrealLevelInstanceTranslator::AddFloatPointAttribute(HAPI_NodeId NodeId, 
 
 	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::AddAttribute(FHoudiniEngine::Get().GetSession(),NodeId,0,Name, &AttributeInfo), false);
 	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::SetAttributeFloatData(FHoudiniEngine::Get().GetSession(), NodeId, 0, Name, &AttributeInfo, Data, 0, Count), false);
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::CommitGeo(FHoudiniEngine::Get().GetSession(), NodeId), false);
+
+	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiCommitGeo(NodeId), false);
+
 	return true;
 }
 
-void FUnrealLevelInstanceTranslator::CreateAttributeData(HAPI_NodeId NodeId, ALevelInstance * LevelInstance)
+void FUnrealLevelInstanceTranslator::CreateAttributeData(HAPI_NodeId NodeId, ALevelInstance* LevelInstance)
 {
 	constexpr int NumInstances = 1;
 	TArray<float> Positions;
@@ -211,7 +214,6 @@ void FUnrealLevelInstanceTranslator::CreateAttributeData(HAPI_NodeId NodeId, ALe
 	const FTransform& Transform = LevelInstance->GetActorTransform();
 
 	FVector PositionVector = Transform.GetLocation();
-	FVector3f Position;
 	Positions.Add(0.0f);
 	Positions.Add(0.0f);
 	Positions.Add(0.0f);
@@ -220,8 +222,7 @@ void FUnrealLevelInstanceTranslator::CreateAttributeData(HAPI_NodeId NodeId, ALe
 	AddStringPointAttribute(NodeId, HAPI_UNREAL_ATTRIB_ACTOR_PATH, ActorPaths);
 	AddStringPointAttribute(NodeId, HAPI_UNREAL_ATTRIB_LEVEL_INSTANCE_NAME, ActorLevels);
 
-	FHoudiniApi::CommitGeo(FHoudiniEngine::Get().GetSession(), NodeId);
-
+	FHoudiniEngineUtils::HapiCommitGeo(NodeId);
 }
 
 

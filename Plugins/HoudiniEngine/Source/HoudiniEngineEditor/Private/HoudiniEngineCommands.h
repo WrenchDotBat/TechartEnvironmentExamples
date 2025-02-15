@@ -30,12 +30,15 @@
 #include "Misc/SlowTask.h"
 #include "Delegates/IDelegateInstance.h"
 #include "HoudiniEngineRuntimeCommon.h"
+#include "HoudiniRuntimeSettings.h"
 
 class UHoudiniAssetComponent;
 class AHoudiniAssetActor;
 struct FSlowTask;
 
-static const FName NodeSyncTabName("NodeSync");
+static const FName NodeSyncTabName("HoudiniNodeSync");
+static const FName HoudiniToolsTabName("HoudiniTools");
+static const FName ExamplesTabName("Examples");
 
 // Class containing commands for Houdini Engine actions
 class FHoudiniEngineCommands : public TCommands<FHoudiniEngineCommands>
@@ -94,13 +97,16 @@ public:
 	static void RecentreSelection();
 
 	// Helper function for starting Houdini in Sesion Sync mode
-	static void OpenSessionSync();
+	static void OpenSessionSync(bool bWaitForCompletion = false);
 
 	// Helper function for closing the current Houdini Sesion Sync
 	static void CloseSessionSync();
 
 	// Helper function for Showing Node Sync
 	static void OpenNodeSync();
+
+	// Helper function for summoning Houdini Tools Tab
+	static void OpenHoudiniToolsTab();
 
 	// returns true if the current HE session is valid
 	static bool IsSessionValid();
@@ -122,9 +128,27 @@ public:
 
 	static void ShowPluginSettings();
 
+	static void ShowPluginEditorSettings();
+
+	static void OpenContentExampleGit();
+
+	static void BrowseToContentExamples();
+
+	static bool HasContentExamples();
+
 	static void OnlineDocumentation();
 
 	static void OnlineForum();
+
+	static void DumpGenericAttribute(const TArray<FString>& Args);
+
+	static void CleanHoudiniEngineSession();
+
+	static void StartPerformanceMonitoring();
+
+	static void StopPerformanceMonitoring();
+
+	static void DumpNode(const TArray<FString>& Args);
 
 	// Helper function for building static meshes for all assets using HoudiniStaticMesh
 	// If bSilent is false, show a progress dialog.
@@ -183,11 +207,15 @@ public:
 
 	// UI Action to open Houdini Node Sync Panel
 	TSharedPtr<FUICommandInfo> _OpenNodeSync;
+	// UI Action to open Houdini Tools Panel
+	TSharedPtr<FUICommandInfo> _OpenHoudiniTools;
 
 	//
 	TSharedPtr<FUICommandInfo> _InstallInfo;
 	//
 	TSharedPtr<FUICommandInfo> _PluginSettings;
+	//
+	TSharedPtr<FUICommandInfo> _PluginEditorSettings;
 
 	// Menu action called to open the current scene in Houdini.
 	TSharedPtr<FUICommandInfo> _OpenInHoudini;
@@ -196,9 +224,15 @@ public:
 	// Menu action called to clean up all unused files in the cook temp folder
 	TSharedPtr<FUICommandInfo> _CleanUpTempFolder;
 
-	//
+
+	// Opens the content examples Git Repo
+	TSharedPtr<FUICommandInfo> _ContentExampleGit;
+	// Browse to the installed content example folder
+	TSharedPtr<FUICommandInfo> _ContentExampleBrowseTo;
+	
+	// Opens the online doc
 	TSharedPtr<FUICommandInfo> _OnlineDoc;
-	//
+	// Opens the plugin forum
 	TSharedPtr<FUICommandInfo> _OnlineForum;
 	// Menu action called to report a bug.
 	TSharedPtr<FUICommandInfo> _ReportBug;
@@ -249,16 +283,46 @@ protected:
 
 	// Called in a background thread by RefineHoudiniProxyMeshesToStaticMeshes when some components need to be cooked to generate UStaticMeshes. Checks and waits for
 	// cooking of each component to complete, and then calls RefineHoudiniProxyMeshesToStaticMeshesNotifyDone on the main thread.
-	static void RefineHoudiniProxyMeshesToStaticMeshesWithCookInBackgroundThread(const TArray<UHoudiniAssetComponent*> &InComponentsToCook, TSharedPtr<FSlowTask, ESPMode::ThreadSafe> InTaskProgress, const uint32 InNumSkippedComponents, bool bInOnPreSaveWorld, UWorld *InOnPreSaveWorld, const TArray<UHoudiniAssetComponent*> &InSuccessfulComponents, const TArray<UHoudiniAssetComponent*> &InFailedComponents, const TArray<UHoudiniAssetComponent*> &InSkippedComponents);
+	static void RefineHoudiniProxyMeshesToStaticMeshesWithCookInBackgroundThread(
+		const TArray<UHoudiniAssetComponent*> &InComponentsToCook,
+		TSharedPtr<FSlowTask,
+		ESPMode::ThreadSafe> InTaskProgress,
+		const uint32 InNumSkippedComponents,
+		bool bInOnPreSaveWorld,
+		UWorld *InOnPreSaveWorld,
+		const TArray<UHoudiniAssetComponent*> &InSuccessfulComponents,
+		const TArray<UHoudiniAssetComponent*> &InFailedComponents,
+		const TArray<UHoudiniAssetComponent*> &InSkippedComponents);
 
 	// Display a notification / end/close progress dialog, when refining mesh proxies to static meshes is complete
-	static void RefineHoudiniProxyMeshesToStaticMeshesNotifyDone(const uint32 InNumTotalComponents, FSlowTask* const InTaskProgress, const bool bCancelled, const bool bOnPreSaveWorld, UWorld* const InOnPreSaveWorld, const TArray<UHoudiniAssetComponent*> &InSuccessfulComponents, const TArray<UHoudiniAssetComponent*> &InFailedComponents, const TArray<UHoudiniAssetComponent*> &InSkippedComponents);
+	static void RefineHoudiniProxyMeshesToStaticMeshesNotifyDone(
+		const uint32 InNumTotalComponents,
+		FSlowTask* const InTaskProgress,
+		const bool bCancelled,
+		const bool bOnPreSaveWorld,
+		UWorld* const InOnPreSaveWorld,
+		const TArray<UHoudiniAssetComponent*> &InSuccessfulComponents,
+		const TArray<UHoudiniAssetComponent*> &InFailedComponents,
+		const TArray<UHoudiniAssetComponent*> &InSkippedComponents);
 
 	// Handle OnPostSaveWorld for refining proxy meshes: this saves all the dirty UPackages of the UStaticMeshes that were created during RefineHoudiniProxyMeshesToStaticMeshes
 	// if it was called as a result of a PreSaveWorld.
-	static void RefineProxyMeshesHandleOnPostSaveWorld(const TArray<UHoudiniAssetComponent*> &InSuccessfulComponents, uint32 InSaveFlags, UWorld* InWorld, bool bInSuccess);
+	static void RefineProxyMeshesHandleOnPostSaveWorld(
+		const TArray<UHoudiniAssetComponent*> &InSuccessfulComponents,
+		uint32 InSaveFlags,
+		UWorld* InWorld,
+		bool bInSuccess);
 
-	static void SetAllowPlayInEditorRefinement(const TArray<UHoudiniAssetComponent*>& InComponents, bool bEnabled);
+	static void SetAllowPlayInEditorRefinement(
+		const TArray<UHoudiniAssetComponent*>& InComponents, bool bEnabled);
+
+	// Start and connect to Session Sync
+	static bool StartAndConnectToSessionSync(
+		const EHoudiniRuntimeSettingsSessionType SessionType,
+		const FString& ServerPipeName,
+		const int32 ServerPort,
+		const int64 BufferSize,
+		const bool BufferCyclic);
 
 	// Delegate that is set up to refined proxy meshes post save world (it removes itself afterwards)
 	static FDelegateHandle OnPostSaveWorldRefineProxyMeshesHandle;

@@ -3,6 +3,13 @@
  * Side Effects Software Inc., and is not to be reproduced,
  * transmitted, or disclosed in any way without written permission.
  *
+ * Produced by:
+ *      Side Effects Software Inc
+ *      123 Front Street West, Suite 1401
+ *      Toronto, Ontario
+ *      Canada   M5J 2M2
+ *      416-504-9876
+ *
  * COMMENTS:
  */
 
@@ -11,6 +18,13 @@
 
 #include "HAPI_API.h"
 #include "HAPI_Common.h"
+
+// Session ------------------------------------------------------------------
+
+HAPI_DECL_RETURN( void )
+    HAPI_SessionInfo_Init( HAPI_SessionInfo * in );
+HAPI_DECL_RETURN( HAPI_SessionInfo )
+    HAPI_SessionInfo_Create();
 
 // Server -------------------------------------------------------------------
 

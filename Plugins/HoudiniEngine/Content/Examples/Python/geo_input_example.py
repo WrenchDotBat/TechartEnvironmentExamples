@@ -36,7 +36,7 @@ _g_wrapper = None
 
 
 def get_test_hda_path():
-    return "/HoudiniEngine/Examples/hda/subnet_test_2_0.subnet_test_2_0"
+    return '/HoudiniEngine/Examples/hda/subnet_test_2_0.subnet_test_2_0'
 
 
 def get_test_hda():
@@ -44,7 +44,7 @@ def get_test_hda():
 
 
 def get_geo_asset_path():
-    return "/Engine/BasicShapes/Cube.Cube"
+    return '/Engine/BasicShapes/Cube.Cube'
 
 
 def get_geo_asset():
@@ -52,7 +52,7 @@ def get_geo_asset():
 
 
 def get_cylinder_asset_path():
-    return "/Engine/BasicShapes/Cylinder.Cylinder"
+    return '/Engine/BasicShapes/Cylinder.Cylinder'
 
 
 def get_cylinder_asset():
@@ -60,7 +60,7 @@ def get_cylinder_asset():
 
 
 def configure_inputs(in_wrapper):
-    print("configure_inputs")
+    print('configure_inputs')
 
     # Unbind from the delegate
     in_wrapper.on_post_instantiation_delegate.remove_callable(configure_inputs)
@@ -77,7 +77,7 @@ def configure_inputs(in_wrapper):
     geo_input = in_wrapper.create_empty_input(unreal.HoudiniPublicAPIGeoInput)
     # Set the input objects/assets for this input
     geo_asset = get_geo_asset()
-    geo_input.set_input_objects((geo_asset,))
+    geo_input.set_input_objects((geo_asset, ))
     # Set the transform of the input geo
     geo_input.set_input_object_transform_offset(
         0,
@@ -85,7 +85,7 @@ def configure_inputs(in_wrapper):
             (200, 0, 100),
             (45, 0, 45),
             (2, 2, 2),
-        ),
+        )
     )
     # copy the input data to the HDA as node input 0
     in_wrapper.set_input_at_index(0, geo_input)
@@ -96,7 +96,7 @@ def configure_inputs(in_wrapper):
     geo_input = in_wrapper.create_empty_input(unreal.HoudiniPublicAPIGeoInput)
     # Set the input objects/assets for this input (cylinder in this case)
     geo_asset = get_cylinder_asset()
-    geo_input.set_input_objects((geo_asset,))
+    geo_input.set_input_objects((geo_asset, ))
     # Set the transform of the input geo
     geo_input.set_input_object_transform_offset(
         0,
@@ -104,44 +104,40 @@ def configure_inputs(in_wrapper):
             (-200, 0, 0),
             (0, 0, 0),
             (2, 2, 2),
-        ),
+        )
     )
     # copy the input data to the HDA as input parameter 'objpath1'
-    in_wrapper.set_input_parameter("objpath1", geo_input)
+    in_wrapper.set_input_parameter('objpath1', geo_input)
     # We can now discard the API input object
     geo_input = None
 
     # Set the subnet_test HDA to output its first input
-    in_wrapper.set_int_parameter_value("enable_geo", 1)
+    in_wrapper.set_int_parameter_value('enable_geo', 1)
 
 
 def print_api_input(in_input):
-    print("\t\tInput type: {0}".format(in_input.__class__))
-    print("\t\tbKeepWorldTransform: {0}".format(in_input.keep_world_transform))
-    print("\t\tbImportAsReference: {0}".format(in_input.import_as_reference))
+    print('\t\tInput type: {0}'.format(in_input.__class__))
+    print('\t\tbKeepWorldTransform: {0}'.format(in_input.keep_world_transform))
+    print('\t\tbImportAsReference: {0}'.format(in_input.import_as_reference))
     if isinstance(in_input, unreal.HoudiniPublicAPIGeoInput):
-        print("\t\tbPackBeforeMerge: {0}".format(in_input.pack_before_merge))
-        print("\t\tbExportLODs: {0}".format(in_input.export_lo_ds))
-        print("\t\tbExportSockets: {0}".format(in_input.export_sockets))
-        print("\t\tbExportColliders: {0}".format(in_input.export_colliders))
+        print('\t\tbPackBeforeMerge: {0}'.format(in_input.pack_before_merge))
+        print('\t\tbExportLODs: {0}'.format(in_input.export_lo_ds))
+        print('\t\tbExportSockets: {0}'.format(in_input.export_sockets))
+        print('\t\tbExportColliders: {0}'.format(in_input.export_colliders))
 
     input_objects = in_input.get_input_objects()
     if not input_objects:
-        print("\t\tEmpty input!")
+        print('\t\tEmpty input!')
     else:
-        print("\t\tNumber of objects in input: {0}".format(len(input_objects)))
+        print('\t\tNumber of objects in input: {0}'.format(len(input_objects)))
         for idx, input_object in enumerate(input_objects):
-            print("\t\t\tInput object #{0}: {1}".format(idx, input_object))
-            if hasattr(in_input, "get_input_object_transform_offset"):
-                print(
-                    "\t\t\tObject Transform Offset: {0}".format(
-                        in_input.get_input_object_transform_offset(idx)
-                    )
-                )
+            print('\t\t\tInput object #{0}: {1}'.format(idx, input_object))
+            if hasattr(in_input, 'get_input_object_transform_offset'):
+                print('\t\t\tObject Transform Offset: {0}'.format(in_input.get_input_object_transform_offset(idx)))
 
 
 def print_inputs(in_wrapper):
-    print("print_inputs")
+    print('print_inputs')
 
     # Unbind from the delegate
     in_wrapper.on_post_processing_delegate.remove_callable(print_inputs)
@@ -151,19 +147,19 @@ def print_inputs(in_wrapper):
     parm_inputs = in_wrapper.get_input_parameters()
 
     if not node_inputs:
-        print("No node inputs found!")
+        print('No node inputs found!')
     else:
-        print("Number of node inputs: {0}".format(len(node_inputs)))
+        print('Number of node inputs: {0}'.format(len(node_inputs)))
         for input_index, input_wrapper in node_inputs.items():
-            print("\tInput index: {0}".format(input_index))
+            print('\tInput index: {0}'.format(input_index))
             print_api_input(input_wrapper)
 
     if not parm_inputs:
-        print("No parameter inputs found!")
+        print('No parameter inputs found!')
     else:
-        print("Number of parameter inputs: {0}".format(len(parm_inputs)))
+        print('Number of parameter inputs: {0}'.format(len(parm_inputs)))
         for parm_name, input_wrapper in parm_inputs.items():
-            print("\tInput parameter name: {0}".format(parm_name))
+            print('\tInput parameter name: {0}'.format(parm_name))
             print_api_input(input_wrapper)
 
 
@@ -181,5 +177,5 @@ def run():
     _g_wrapper.on_post_processing_delegate.add_callable(print_inputs)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     run()

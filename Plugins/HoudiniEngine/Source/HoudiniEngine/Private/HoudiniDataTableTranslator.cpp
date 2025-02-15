@@ -2,6 +2,7 @@
 
 #include "HoudiniApi.h"
 #include "HoudiniEngine.h"
+#include "HoudiniEngineAttributes.h"
 #include "HoudiniEngineString.h"
 #include "HoudiniEngineUtils.h"
 #include "HoudiniPackageParams.h"
@@ -397,10 +398,12 @@ FHoudiniDataTableTranslator::DeletePreviousOutput(UHoudiniOutput* CurOutput)
 
 bool
 FHoudiniDataTableTranslator::BuildDataTable(
-	FHoudiniGeoPartObject& HGPO,
+	const FHoudiniGeoPartObject& HGPO,
 	UHoudiniOutput* CurOutput,
 	FHoudiniPackageParams& PackageParams)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniDataTableTranslator::BuildDataTable);
+
 	DeletePreviousOutput(CurOutput);
 
 	int32 GeoId = HGPO.GeoId;
@@ -436,8 +439,10 @@ FHoudiniDataTableTranslator::BuildDataTable(
 		FHoudiniApi::AttributeInfo_Init(&AttrInfo);
 		TArray<FString> AttrData;
 
-		if (FHoudiniEngineUtils::HapiGetAttributeDataAsString(GeoId, PartId, HAPI_UNREAL_ATTRIB_OBJECT_PATH, AttrInfo, AttrData, 1, HAPI_ATTROWNER_INVALID, 0, 1) &&
-			AttrData.Num() == 1)
+		FHoudiniHapiAccessor Accessor(GeoId, PartId, HAPI_UNREAL_ATTRIB_OBJECT_PATH);
+		bool bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, 1, AttrData, 0, 1);
+
+		if (bSuccess && AttrData.Num() == 1)
 		{
 			BakeFolder = AttrData[0];
 		}
@@ -639,7 +644,6 @@ FHoudiniDataTableTranslator::BuildDataTable(
 
 	FHoudiniOutputObjectIdentifier OutputID(HGPO.ObjectId, GeoId, PartId, HGPO.PartName);
 	FHoudiniOutputObject& FoundOutputObject = CurOutput->GetOutputObjects().FindOrAdd(OutputID);
-	TMap<FHoudiniOutputObjectIdentifier, FHoudiniOutputObject>& OutputObjects = CurOutput->GetOutputObjects();
 	FoundOutputObject.OutputComponents.Empty();
 	FoundOutputObject.OutputObject = DataTable;
 
@@ -660,10 +664,11 @@ FHoudiniDataTableTranslator::BuildDataTable(
 bool
 FHoudiniDataTableTranslator::GenerateRowNames(int32 GeoId, int32 PartId, int32 NumRows, TArray<FString>& RowNames)
 {
-	HAPI_AttributeInfo AttribInfo;
-
 	RowNames.Reserve(NumRows);
-	bool Status = FHoudiniEngineUtils::HapiGetAttributeDataAsString(GeoId, PartId, HAPI_UNREAL_ATTRIB_DATA_TABLE_ROWNAME, AttribInfo, RowNames);
+
+	FHoudiniHapiAccessor Accessor(GeoId, PartId, HAPI_UNREAL_ATTRIB_DATA_TABLE_ROWNAME);
+	bool Status = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, RowNames);
+
 	if (!Status || RowNames.Num() == 0)
 	{
 		RowNames.Add("NewRow");
@@ -683,8 +688,10 @@ FHoudiniDataTableTranslator::SetOutputPath(int32 GeoId,
 	FString& DataTableFolder)
 {
 	TArray<FString> DTNameHolder;
-	bool Status = FHoudiniEngineUtils::HapiGetAttributeDataAsString(GeoId, PartId, HAPI_UNREAL_ATTRIB_OBJECT_PATH, AttribInfo, DTNameHolder);
 
+	FHoudiniHapiAccessor Accessor(GeoId, PartId, HAPI_UNREAL_ATTRIB_OBJECT_PATH);
+	bool Status = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, DTNameHolder);
+	Accessor.GetInfo(AttribInfo);
 	if (Status && AttribInfo.exists && AttribInfo.storage == HAPI_STORAGETYPE_STRING && DTNameHolder.Num())
 	{
 		const FString Folder = FPaths::GetPath(DTNameHolder[0]);
@@ -730,8 +737,10 @@ FHoudiniDataTableTranslator::GetRowStructAttrib(int32 GeoId,
 	FString& RowStructName)
 {
 	TArray<FString> StructPathHolder;
-	bool Status = FHoudiniEngineUtils::HapiGetAttributeDataAsString(GeoId, PartId, HAPI_UNREAL_ATTRIB_DATA_TABLE_ROWSTRUCT, AttribInfo, StructPathHolder);
 
+	FHoudiniHapiAccessor Accessor(GeoId, PartId, HAPI_UNREAL_ATTRIB_DATA_TABLE_ROWSTRUCT);
+	bool Status = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, StructPathHolder);
+	Accessor.GetInfo(AttribInfo);
 	if (Status && AttribInfo.exists && AttribInfo.storage == HAPI_STORAGETYPE_STRING && StructPathHolder.Num())
 	{
 		RowStructName = StructPathHolder[0];
@@ -1143,7 +1152,9 @@ FHoudiniDataTableTranslator::PopulateRowData(int32 GeoId,
 		if (!IsValidType(AttribInfo, Prop))
 		{
 			HOUDINI_LOG_WARNING(TEXT("[FHoudiniDataTableTranslator::PopulateRowData]: Incompatible types for column %s and attribute %s."), *Prop->GetAuthoredName(), *KV.Key);
-			return false;
+			HOUDINI_LOG_WARNING(TEXT("[FHoudiniDataTableTranslator::PopulateRowData]: --- skipping values for attribute %s ---"), *KV.Key);
+
+			continue;
 		}
 
 		void* Data = nullptr;
@@ -1220,7 +1231,12 @@ FHoudiniDataTableTranslator::PopulateRowData(int32 GeoId,
 		{
 			TArray<FString> StringData;
 			StringData.Reserve(NumRows);
-			if (!FHoudiniEngineUtils::HapiGetAttributeDataAsString(GeoId, PartId, AttribName, AttribInfo, StringData, AttribInfo.tupleSize))
+
+
+			FHoudiniHapiAccessor Accessor(GeoId, PartId, AttribName);
+			bool bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, StringData);
+
+			if (!bSuccess)
 				Result = HAPI_RESULT_FAILURE;
 			else
 				Result = HAPI_RESULT_SUCCESS;

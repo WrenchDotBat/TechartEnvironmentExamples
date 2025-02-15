@@ -83,13 +83,15 @@ struct FHoudiniAutomationTest : FAutomationTestBase
 };
 
 // Similar to IMPLEMENT_SIMPLE_AUTOMATION_TEST, But use Houdini class
-#define IMPLEMENT_SIMPLE_HOUDINI_AUTOMATION_TEST( TClass, PrettyName, TFlags ) \
-IMPLEMENT_SIMPLE_AUTOMATION_TEST_PRIVATE(TClass, FHoudiniAutomationTest, PrettyName, TFlags, __FILE__, __LINE__) \
+#define IMPLEMENT_SIMPLE_CLASS_HOUDINI_AUTOMATION_TEST( TClass, TBaseClass, PrettyName, TFlags ) \
+IMPLEMENT_SIMPLE_AUTOMATION_TEST_PRIVATE(TClass, TBaseClass, PrettyName, TFlags, __FILE__, __LINE__) \
 namespace\
 {\
 TClass TClass##AutomationTestInstance( TEXT(#TClass) );\
 }
 
+#define IMPLEMENT_SIMPLE_HOUDINI_AUTOMATION_TEST( TClass, PrettyName, TFlags ) \
+IMPLEMENT_SIMPLE_CLASS_HOUDINI_AUTOMATION_TEST(TClass, FHoudiniAutomationTest, PrettyName, TFlags) 
 
 /*
  *TBD;
@@ -331,8 +333,11 @@ public:
 	// The OnSuccess function is called if a valid existing session is found or if one is created. OnFail is called if
 	// a session could not be found or created after exhausting all retry attempts.
 	static bool CreateSessionIfInvalidWithLatentRetries(
-		FHoudiniAutomationTest* Test, const FName& SessionPipeName, const TFunction<void()>& OnSuccess,
+		FAutomationTestBase* Test, const FName& SessionPipeName, const TFunction<void()>& OnSuccess,
 		const TFunction<void()>& OnFail, const int8 NumRetries=2, const double TimeBetweenRetriesSeconds=10.0);
+
+	// The pipe name to use when creating the Houdini Engine session during tests
+	static const FName HoudiniEngineSessionPipeName;
 
 private:
 	static void WaitForScreenshotAndCopy(FHoudiniAutomationTest* Test, FString BaseName, const TFunction<void(FHoudiniAutomationTest*, FString)>& OnScreenshotGenerated);
@@ -359,8 +364,6 @@ private:
 	static const FString TempPathFolder;
 	static const float TimeoutTime;
 
-	// The pipe name to use when creating the Houdini Engine session during tests
-	static const FName HoudiniEngineSessionPipeName;
 
 	static UHoudiniEditorTestObject* GetTestObject();
 
@@ -409,7 +412,7 @@ public:
 	bool HasReachedExpectedCookCount() const { return this->CookCount >= this->ExpectedCookCount; }
 
 	UPROPERTY()
-	TArray<UHoudiniPublicAPIAssetWrapper*> InAssetWrappers;
+	TArray<TObjectPtr<UHoudiniPublicAPIAssetWrapper>> InAssetWrappers;
 
 	FOnHoudiniAssetStateChange OnPreInstantiationDelegate;
 	FOnHoudiniAssetStateChange OnPostProcessingDelegate;

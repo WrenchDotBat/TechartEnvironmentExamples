@@ -90,8 +90,12 @@ void FHoudiniStaticMeshRenderBufferSet::CopyBuffers()
 	StaticMeshVertexBuffer.BindTangentVertexBuffer(&LocalVertexFactory, Data);
 	StaticMeshVertexBuffer.BindPackedTexCoordVertexBuffer(&LocalVertexFactory, Data);
 	ColorVertexBuffer.BindColorVertexBuffer(&LocalVertexFactory, Data);
-
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 4
+	FRHICommandListBase& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+	LocalVertexFactory.SetData(RHICmdList, Data);
+#else
 	LocalVertexFactory.SetData(Data);
+#endif
 	InitOrUpdateResource(&LocalVertexFactory);
 
 	if (TriangleIndexBuffer.Indices.Num() > 0)
@@ -162,7 +166,7 @@ FHoudiniStaticMeshSceneProxy::FHoudiniStaticMeshSceneProxy(UHoudiniStaticMeshCom
 
 FHoudiniStaticMeshSceneProxy::~FHoudiniStaticMeshSceneProxy()
 {
-	check(IsInRenderingThread());
+	//check(IsInRenderingThread());
 
 	for (FHoudiniStaticMeshRenderBufferSet* BufferSet : BufferSets)
 	{
@@ -210,7 +214,7 @@ void FHoudiniStaticMeshSceneProxy::UpdatedReferencedMaterials()
 
 void FHoudiniStaticMeshSceneProxy::Build()
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(TEXT("FHoudiniStaticMeshSceneProxy::Build"));
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniStaticMeshSceneProxy::Build);
 
 	// Allocate a buffer set per material
 	const uint32 NumMaterials = GetNumMaterials();
@@ -294,7 +298,12 @@ void FHoudiniStaticMeshSceneProxy::GetDynamicMeshElements(const TArray<const FSc
 				continue;
 
 			FDynamicPrimitiveUniformBuffer &DynamicPrimitiveUniformBuffer = Collector.AllocateOneFrameResource<FDynamicPrimitiveUniformBuffer>();
-#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 1
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 4
+			//FRHICommandListBase& RHICmdList = FRHICommandListExecutor::GetImmediateCommandList();
+			DynamicPrimitiveUniformBuffer.Set(
+				Collector.GetRHICommandList(), GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, bOutputVelocity);
+
+#elif ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 1
 			DynamicPrimitiveUniformBuffer.Set(
 				GetLocalToWorld(), PreviousLocalToWorld, GetBounds(), GetLocalBounds(), true, bHasPrecomputedVolumetricLightmap, bOutputVelocity);
 #else
@@ -383,7 +392,7 @@ bool FHoudiniStaticMeshSceneProxy::CanBeOccluded() const
 
 void FHoudiniStaticMeshSceneProxy::PopulateBuffers(const UHoudiniStaticMesh *InMesh, FHoudiniStaticMeshRenderBufferSet *InBuffers, const TArray<uint32>* InTriangleIDs, uint32 InTriangleGroupStartIdx, uint32 InNumTrianglesInGroup)
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(TEXT("FHoudiniStaticMeshSceneProxy::PopulateBuffers"));
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniStaticMeshSceneProxy::PopulateBuffers);
 
 	check(InMesh);
 	check(InBuffers);
@@ -467,7 +476,7 @@ void FHoudiniStaticMeshSceneProxy::PopulateBuffers(const UHoudiniStaticMesh *InM
 
 void FHoudiniStaticMeshSceneProxy::BuildSingleBufferSet()
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(TEXT("FHoudiniStaticMeshSceneProxy::BuildSingleBufferSet"));
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniStaticMeshSceneProxy::BuildSingleBufferSet);
 
 	if (!Component)
 		return;
@@ -492,7 +501,7 @@ void FHoudiniStaticMeshSceneProxy::BuildSingleBufferSet()
 
 void FHoudiniStaticMeshSceneProxy::BuildBufferSetsByMaterial()
 {
-	TRACE_CPUPROFILER_EVENT_SCOPE(TEXT("FHoudiniStaticMeshSceneProxy::BuildBufferSetsByMaterial"));
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniStaticMeshSceneProxy::BuildBufferSetsByMaterial);
 
 	// We need to group tris by which material they use, and populate a buffer set for each group
 	if (!Component)

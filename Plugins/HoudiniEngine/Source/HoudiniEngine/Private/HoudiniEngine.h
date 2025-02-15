@@ -31,7 +31,7 @@
 #include "HoudiniEngineTaskInfo.h"
 #include "HoudiniRuntimeSettings.h"
 
-#include "Modules/ModuleInterface.h"
+#include "Modules/ModuleInterface.h" 
 
 class FRunnableThread;
 class FHoudiniEngineScheduler;
@@ -79,8 +79,18 @@ class HOUDINIENGINE_API FHoudiniEngine : public IModuleInterface
 		// Return the houdini executable to use
 		static const FString GetHoudiniExecutable();
 
-		// Session accessor
-		virtual const HAPI_Session* GetSession() const;
+		/** Gets the main session; equivalent to calling @c GetSession(0) */
+		virtual const HAPI_Session* GetSession() const
+		{
+			return GetSession(0);
+		}
+
+		virtual const HAPI_Session* GetSession(int32 Index) const;
+
+		virtual const int32 GetNumSessions() const
+		{
+			return Sessions.Num();
+		}
 
 		virtual const EHoudiniSessionStatus& GetSessionStatus() const;
 
@@ -93,23 +103,36 @@ class HOUDINIENGINE_API FHoudiniEngine : public IModuleInterface
 
 		// Creates a new session
 		bool StartSession(
-			HAPI_Session*& SessionPtr,
-			const bool& StartAutomaticServer,
-			const float& AutomaticServerTimeout,
-			const EHoudiniRuntimeSettingsSessionType& SessionType,
+			const bool bStartAutomaticServer,
+			const float AutomaticServerTimeout,
+			const EHoudiniRuntimeSettingsSessionType SessionType,
 			const FString& ServerPipeName,
-			const int32& ServerPort,
-			const FString& ServerHost);
+			const int32 ServerPort,
+			const FString& ServerHost,
+			const int32 Index,
+			const int64 SharedMemoryBufferSize,
+			const bool bSharedMemoryCyclicBuffer);
 
-		// Stop the current session if it is valid
-		bool StopSession(HAPI_Session*& SessionPtr);
+		bool StartSessions(
+			const bool bStartAutomaticServer,
+			const float AutomaticServerTimeout,
+			const EHoudiniRuntimeSettingsSessionType SessionType,
+			const int32 MaxSessions,
+			const FString& ServerPipeName,
+			const int32 ServerPort,
+			const FString& ServerHost,
+			const int64 SharedMemoryBufferSize,
+			const bool bSharedMemoryCyclicBuffer);
 
 		// Creates a session sync session
 		bool SessionSyncConnect(
-			const EHoudiniRuntimeSettingsSessionType& SessionType,
+			const EHoudiniRuntimeSettingsSessionType SessionType,
+			const int32 NumSessions,
 			const FString& ServerPipeName,
 			const FString& ServerHost,
-			const int32& ServerPort);
+			const int32 ServerPort,
+			const int64 BufferSize,
+			const bool BufferCyclic);
 
 		// Stops the current session
 		bool StopSession();
@@ -142,14 +165,11 @@ class HOUDINIENGINE_API FHoudiniEngine : public IModuleInterface
 		bool UpdateTaskSlateNotification(const FText& InText);
 		bool FinishTaskSlateNotification(const FText& InText);
 
-		// Only update persistent notification if cooking notification has been enabled in the settings.
+		// Update persistent cooking notification if enabled in the settings.
 		bool UpdateCookingNotification(const FText& InText, const bool bExpireAndFade);
 
-		// Update persistent notification irrespective of any notification enable/disable settings. 
-		bool UpdatePersistentNotification(const FText& InText, const bool bExpireAndFade);
-
-		// If the time since last persistent notification has expired, fade out the persistent notification.
-		void TickPersistentNotification(float DeltaTime);
+		// Update the time since the last persistent cooking notification update
+		void TickCookingNotification(float DeltaTime);
 
 		void SetHapiNotificationStartedTime(const double& InTime) { HapiNotificationStarted = InTime; };
 
@@ -230,6 +250,7 @@ class HOUDINIENGINE_API FHoudiniEngine : public IModuleInterface
 		const HAPI_License GetLicenseType() const { return LicenseType; };
 
 		const bool IsLicenseIndie() const { return (LicenseType == HAPI_LICENSE_HOUDINI_ENGINE_INDIE || LicenseType == HAPI_LICENSE_HOUDINI_INDIE); };
+		const bool IsLicenseEducation() const { return (LicenseType == HAPI_LICENSE_HOUDINI_ENGINE_EDUCATION || LicenseType == HAPI_LICENSE_HOUDINI_EDUCATION); };
 
 		// Session Sync ProcHandle accessor
 		FProcHandle GetHESSProcHandle() const { return HESS_ProcHandle; };
@@ -249,6 +270,9 @@ class HOUDINIENGINE_API FHoudiniEngine : public IModuleInterface
 
 		void UnregisterPostEngineInitCallback();
 
+		void StartHAPIPerformanceMonitoring();
+		void StopHAPIPerformanceMonitoring(const FString& TraceDirectory);
+
 	private:
 
 		// Singleton instance of Houdini Engine.
@@ -257,8 +281,7 @@ class HOUDINIENGINE_API FHoudiniEngine : public IModuleInterface
 		// Location of libHAPI binary. 
 		FString LibHAPILocation;
 
-		// The Houdini Engine session. 
-		HAPI_Session Session;
+		TArray<HAPI_Session> Sessions;
 
 		// The Houdini Engine session's status
 		EHoudiniSessionStatus SessionStatus;
@@ -336,13 +359,15 @@ class HOUDINIENGINE_API FHoudiniEngine : public IModuleInterface
 
 		FDelegateHandle PostEngineInitCallback;
 
+		int HAPIPerfomanceProfileID;
+
 #if WITH_EDITOR
 		/** Notification used by this component. **/
 		TWeakPtr<class SNotificationItem> NotificationPtr;
 
-		/** Persistent notification. **/
+		/** Persistent cooking notification. **/
 		bool bPersistentAllowExpiry;
-		TWeakPtr<class SNotificationItem> PersistentNotificationPtr;
+		TWeakPtr<class SNotificationItem> CookingNotificationPtr;
 		float TimeSinceLastPersistentNotification;
 	
 		/** Used to delay notification updates for HAPI asynchronous work. **/

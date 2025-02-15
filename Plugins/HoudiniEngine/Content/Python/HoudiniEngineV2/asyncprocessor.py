@@ -26,7 +26,7 @@ import unreal
 
 
 class ProcessHDA(object):
-    """An object that wraps async processing of an HDA (instantiating,
+    """ An object that wraps async processing of an HDA (instantiating,
     cooking/processing/baking an HDA), with functions that are called at the
     various stages of the process, that can be overridden by subclasses for
     custom funtionality:
@@ -49,26 +49,24 @@ class ProcessHDA(object):
     function to start the asynchronous process.
 
     """
-
     def __init__(
-        self,
-        houdini_asset,
-        instantiate_at=unreal.Transform(),
-        parameters=None,
-        node_inputs=None,
-        parameter_inputs=None,
-        world_context_object=None,
-        spawn_in_level_override=None,
-        enable_auto_cook=True,
-        enable_auto_bake=False,
-        bake_directory_path="",
-        bake_method=unreal.HoudiniEngineBakeOption.TO_ACTOR,
-        remove_output_after_bake=False,
-        recenter_baked_actors=False,
-        replace_previous_bake=False,
-        delete_instantiated_asset_on_completion_or_failure=False,
-    ):
-        """Instantiates an HDA in the specified world/level. Sets parameters
+            self,
+            houdini_asset,
+            instantiate_at=unreal.Transform(),
+            parameters=None,
+            node_inputs=None,
+            parameter_inputs=None,
+            world_context_object=None,
+            spawn_in_level_override=None,
+            enable_auto_cook=True,
+            enable_auto_bake=False,
+            bake_directory_path="",
+            bake_method=unreal.HoudiniEngineBakeOption.TO_ACTOR,
+            remove_output_after_bake=False,
+            recenter_baked_actors=False,
+            replace_previous_bake=False,
+            delete_instantiated_asset_on_completion_or_failure=False):
+        """ Instantiates an HDA in the specified world/level. Sets parameters
         and inputs supplied in InParameters, InNodeInputs and parameter_inputs.
         If bInEnableAutoCook is true, cooks the HDA. If bInEnableAutoBake is
         true, bakes the cooked outputs according to the supplied baking
@@ -127,9 +125,7 @@ class ProcessHDA(object):
         self._remove_output_after_bake = remove_output_after_bake
         self._recenter_baked_actors = recenter_baked_actors
         self._replace_previous_bake = replace_previous_bake
-        self._delete_instantiated_asset_on_completion_or_failure = (
-            delete_instantiated_asset_on_completion_or_failure
-        )
+        self._delete_instantiated_asset_on_completion_or_failure = delete_instantiated_asset_on_completion_or_failure
 
         self._asset_wrapper = None
         self._cook_success = False
@@ -137,87 +133,87 @@ class ProcessHDA(object):
 
     @property
     def asset_wrapper(self):
-        """The asset wrapper for the instantiated HDA processed by this node."""
+        """ The asset wrapper for the instantiated HDA processed by this node. """
         return self._asset_wrapper
 
     @property
     def cook_success(self):
-        """True if the last cook was successful."""
+        """ True if the last cook was successful. """
         return self._cook_success
 
     @property
     def bake_success(self):
-        """True if the last bake was successful."""
+        """ True if the last bake was successful. """
         return self._bake_success
 
     @property
     def houdini_asset(self):
-        """The HDA to instantiate."""
+        """ The HDA to instantiate. """
         return self._houdini_asset
 
     @property
     def instantiate_at(self):
-        """The transform the instantiate the asset with."""
+        """ The transform the instantiate the asset with. """
         return self._instantiate_at
 
     @property
     def parameters(self):
-        """The parameters to set on on_pre_instantiation"""
+        """ The parameters to set on on_pre_instantiation """
         return self._parameters
 
     @property
     def node_inputs(self):
-        """The node inputs to set on on_post_instantiation"""
+        """ The node inputs to set on on_post_instantiation """
         return self._node_inputs
 
     @property
     def parameter_inputs(self):
-        """The object path parameter inputs to set on on_post_instantiation"""
+        """ The object path parameter inputs to set on on_post_instantiation """
         return self._parameter_inputs
 
     @property
     def world_context_object(self):
-        """The world context object: spawn in this world if spawn_in_level_override is not set."""
+        """ The world context object: spawn in this world if spawn_in_level_override is not set. """
         return self._world_context_object
 
     @property
     def spawn_in_level_override(self):
-        """The level to spawn in. If both this and world_context_object is not set, spawn in the editor context's level."""
+        """ The level to spawn in. If both this and world_context_object is not set, spawn in the editor context's level. """
         return self._spawn_in_level_override
 
     @property
     def enable_auto_cook(self):
-        """Whether to set the instantiated asset to auto cook."""
+        """ Whether to set the instantiated asset to auto cook. """
         return self._enable_auto_cook
 
     @property
     def enable_auto_bake(self):
-        """Whether to set the instantiated asset to auto bake after a cook."""
+        """ Whether to set the instantiated asset to auto bake after a cook. """
         return self._enable_auto_bake
 
     @property
     def bake_directory_path(self):
-        """Set the fallback bake directory, for if output attributes do not specify it."""
+        """ Set the fallback bake directory, for if output attributes do not specify it. """
         return self._bake_directory_path
 
     @property
     def bake_method(self):
-        """The bake method/target: for example, to actors vs to blueprints."""
+        """ The bake method/target: for example, to actors vs to blueprints. """
         return self._bake_method
 
     @property
     def remove_output_after_bake(self):
-        """Remove temporary HDA output after a bake."""
+        """ Remove temporary HDA output after a bake. """
         return self._remove_output_after_bake
 
     @property
     def recenter_baked_actors(self):
-        """Recenter the baked actors at their bounding box center."""
+        """ Recenter the baked actors at their bounding box center. """
         return self._recenter_baked_actors
 
     @property
     def replace_previous_bake(self):
-        """Replace previous bake output on each bake. For the purposes of this
+        """ Replace previous bake output on each bake. For the purposes of this
         node, this would mostly apply to .uassets and not actors.
 
         """
@@ -225,11 +221,11 @@ class ProcessHDA(object):
 
     @property
     def delete_instantiated_asset_on_completion_or_failure(self):
-        """Whether or not to delete the instantiated asset after Complete is called."""
+        """ Whether or not to delete the instantiated asset after Complete is called. """
         return self._delete_instantiated_asset_on_completion_or_failure
 
     def activate(self):
-        """Activate the process. This will:
+        """ Activate the process. This will:
 
                 - instantiate houdini_asset and wrap it as asset_wrapper
                 - call on_failure() for any immediate failures
@@ -251,9 +247,7 @@ class ProcessHDA(object):
             return False
 
         # Create an empty API asset wrapper
-        self._asset_wrapper = unreal.HoudiniPublicAPIAssetWrapper.create_empty_wrapper(
-            houdini_api
-        )
+        self._asset_wrapper = unreal.HoudiniPublicAPIAssetWrapper.create_empty_wrapper(houdini_api)
         if not self._asset_wrapper:
             # Handle failures: this will unbind delegates and call on_failure()
             self._handle_on_failure()
@@ -262,40 +256,33 @@ class ProcessHDA(object):
         # Bind to the wrapper's delegates for instantiation, cooking, baking
         # etc events
         self._asset_wrapper.on_pre_instantiation_delegate.add_callable(
-            self._handle_on_pre_instantiation
-        )
+            self._handle_on_pre_instantiation)
         self._asset_wrapper.on_post_instantiation_delegate.add_callable(
-            self._handle_on_post_instantiation
-        )
+            self._handle_on_post_instantiation)
         self._asset_wrapper.on_post_cook_delegate.add_callable(
-            self._handle_on_post_auto_cook
-        )
+            self._handle_on_post_auto_cook)
         self._asset_wrapper.on_pre_process_state_exited_delegate.add_callable(
-            self._handle_on_pre_process
-        )
+            self._handle_on_pre_process)
         self._asset_wrapper.on_post_processing_delegate.add_callable(
-            self._handle_on_post_processing
-        )
+            self._handle_on_post_processing)
         self._asset_wrapper.on_post_bake_delegate.add_callable(
-            self._handle_on_post_auto_bake
-        )
+            self._handle_on_post_auto_bake)
 
         # Begin the instantiation process of houdini_asset and wrap it with
         # self.asset_wrapper
         if not houdini_api.instantiate_asset_with_existing_wrapper(
-            self.asset_wrapper,
-            self.houdini_asset,
-            self.instantiate_at,
-            self.world_context_object,
-            self.spawn_in_level_override,
-            self.enable_auto_cook,
-            self.enable_auto_bake,
-            self.bake_directory_path,
-            self.bake_method,
-            self.remove_output_after_bake,
-            self.recenter_baked_actors,
-            self.replace_previous_bake,
-        ):
+                self.asset_wrapper,
+                self.houdini_asset,
+                self.instantiate_at,
+                self.world_context_object,
+                self.spawn_in_level_override,
+                self.enable_auto_cook,
+                self.enable_auto_bake,
+                self.bake_directory_path,
+                self.bake_method,
+                self.remove_output_after_bake,
+                self.recenter_baked_actors,
+                self.replace_previous_bake):
             # Handle failures: this will unbind delegates and call on_failure()
             self._handle_on_failure()
             return False
@@ -303,31 +290,25 @@ class ProcessHDA(object):
         return True
 
     def _unbind_delegates(self):
-        """Unbinds from self.asset_wrapper's delegates (if valid)."""
+        """ Unbinds from self.asset_wrapper's delegates (if valid). """
         if not self._asset_wrapper:
             return
 
         self._asset_wrapper.on_pre_instantiation_delegate.add_callable(
-            self._handle_on_pre_instantiation
-        )
+            self._handle_on_pre_instantiation)
         self._asset_wrapper.on_post_instantiation_delegate.add_callable(
-            self._handle_on_post_instantiation
-        )
+            self._handle_on_post_instantiation)
         self._asset_wrapper.on_post_cook_delegate.add_callable(
-            self._handle_on_post_auto_cook
-        )
+            self._handle_on_post_auto_cook)
         self._asset_wrapper.on_pre_process_state_exited_delegate.add_callable(
-            self._handle_on_pre_process
-        )
+            self._handle_on_pre_process)
         self._asset_wrapper.on_post_processing_delegate.add_callable(
-            self._handle_on_post_processing
-        )
+            self._handle_on_post_processing)
         self._asset_wrapper.on_post_bake_delegate.add_callable(
-            self._handle_on_post_auto_bake
-        )
+            self._handle_on_post_auto_bake)
 
     def _check_wrapper(self, wrapper):
-        """Checks that wrapper matches self.asset_wrapper. Logs a warning if
+        """ Checks that wrapper matches self.asset_wrapper. Logs a warning if
         it does not.
 
         Args:
@@ -340,17 +321,17 @@ class ProcessHDA(object):
         """
         if wrapper != self._asset_wrapper:
             unreal.log_warning(
-                "[UHoudiniPublicAPIProcessHDANode] Received delegate event "
-                "from unexpected asset wrapper ({0} vs {1})!".format(
-                    self._asset_wrapper.get_name() if self._asset_wrapper else "",
-                    wrapper.get_name() if wrapper else "",
+                '[UHoudiniPublicAPIProcessHDANode] Received delegate event '
+                'from unexpected asset wrapper ({0} vs {1})!'.format(
+                    self._asset_wrapper.get_name() if self._asset_wrapper else '',
+                    wrapper.get_name() if wrapper else ''
                 )
             )
             return False
         return True
 
     def _handle_on_failure(self):
-        """Handle any failures during the lifecycle of the process. Calls
+        """ Handle any failures during the lifecycle of the process. Calls
         self.on_failure() and then unbinds from self.asset_wrapper and
         optionally deletes the instantiated asset.
 
@@ -359,14 +340,11 @@ class ProcessHDA(object):
 
         self._unbind_delegates()
 
-        if (
-            self.delete_instantiated_asset_on_completion_or_failure
-            and self.asset_wrapper
-        ):
+        if self.delete_instantiated_asset_on_completion_or_failure and self.asset_wrapper:
             self.asset_wrapper.delete_instantiated_asset()
 
     def _handle_on_complete(self):
-        """Handles completion of the process. This can happen at one of
+        """ Handles completion of the process. This can happen at one of 
         three stages:
 
             - After on_post_instantiate(), if enable_auto_cook is False.
@@ -383,14 +361,11 @@ class ProcessHDA(object):
 
         self._unbind_delegates()
 
-        if (
-            self.delete_instantiated_asset_on_completion_or_failure
-            and self.asset_wrapper
-        ):
+        if self.delete_instantiated_asset_on_completion_or_failure and self.asset_wrapper:
             self.asset_wrapper.delete_instantiated_asset()
 
     def _handle_on_pre_instantiation(self, wrapper):
-        """Called during pre_instantiation. Sets ``parameters`` on the HDA
+        """ Called during pre_instantiation. Sets ``parameters`` on the HDA
         and calls self.on_pre_instantiation().
 
         """
@@ -404,7 +379,7 @@ class ProcessHDA(object):
         self.on_pre_instantiation()
 
     def _handle_on_post_instantiation(self, wrapper):
-        """Called during post_instantiation. Sets inputs (``node_inputs`` and
+        """ Called during post_instantiation. Sets inputs (``node_inputs`` and
         ``parameter_inputs``) on the HDA and calls self.on_post_instantiation().
 
         Completes execution if enable_auto_cook is False.
@@ -427,7 +402,7 @@ class ProcessHDA(object):
             self._handle_on_complete()
 
     def _handle_on_post_auto_cook(self, wrapper, cook_success):
-        """Called during post_cook. Sets self.cook_success and calls
+        """ Called during post_cook. Sets self.cook_success and calls
         self.on_post_auto_cook().
 
         Args:
@@ -442,14 +417,16 @@ class ProcessHDA(object):
         self.on_post_auto_cook(cook_success)
 
     def _handle_on_pre_process(self, wrapper):
-        """Called during pre_process. Calls self.on_pre_process()."""
+        """ Called during pre_process. Calls self.on_pre_process().
+
+        """
         if not self._check_wrapper(wrapper):
             return
 
         self.on_pre_process()
 
     def _handle_on_post_processing(self, wrapper):
-        """Called during post_processing. Calls self.on_post_processing().
+        """ Called during post_processing. Calls self.on_post_processing().
 
         Completes execution if enable_auto_bake is False.
 
@@ -464,7 +441,7 @@ class ProcessHDA(object):
             self._handle_on_complete()
 
     def _handle_on_post_auto_bake(self, wrapper, bake_success):
-        """Called during post_bake. Sets self.bake_success and calls
+        """ Called during post_bake. Sets self.bake_success and calls
         self.on_post_auto_bake().
 
         Args:
@@ -481,7 +458,7 @@ class ProcessHDA(object):
         self._handle_on_complete()
 
     def on_failure(self):
-        """Called if the process fails to instantiate or fails to start
+        """ Called if the process fails to instantiate or fails to start
         a cook.
 
         Subclasses can override this function implement custom functionality.
@@ -490,7 +467,7 @@ class ProcessHDA(object):
         pass
 
     def on_complete(self):
-        """Called if the process completes instantiation, cook and/or baking,
+        """ Called if the process completes instantiation, cook and/or baking,
         depending on enable_auto_cook and enable_auto_bake.
 
         Subclasses can override this function implement custom functionality.
@@ -499,7 +476,7 @@ class ProcessHDA(object):
         pass
 
     def on_pre_instantiation(self):
-        """Called during pre_instantiation.
+        """ Called during pre_instantiation.
 
         Subclasses can override this function implement custom functionality.
 
@@ -507,7 +484,7 @@ class ProcessHDA(object):
         pass
 
     def on_post_instantiation(self):
-        """Called during post_instantiation.
+        """ Called during post_instantiation.
 
         Subclasses can override this function implement custom functionality.
 
@@ -515,7 +492,7 @@ class ProcessHDA(object):
         pass
 
     def on_post_auto_cook(self, cook_success):
-        """Called during post_cook.
+        """ Called during post_cook.
 
         Subclasses can override this function implement custom functionality.
 
@@ -526,7 +503,7 @@ class ProcessHDA(object):
         pass
 
     def on_pre_process(self):
-        """Called during pre_process.
+        """ Called during pre_process.
 
         Subclasses can override this function implement custom functionality.
 
@@ -534,7 +511,7 @@ class ProcessHDA(object):
         pass
 
     def on_post_processing(self):
-        """Called during post_processing.
+        """ Called during post_processing.
 
         Subclasses can override this function implement custom functionality.
 
@@ -542,7 +519,7 @@ class ProcessHDA(object):
         pass
 
     def on_post_auto_bake(self, bake_success):
-        """Called during post_bake.
+        """ Called during post_bake.
 
         Subclasses can override this function implement custom functionality.
 

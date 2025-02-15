@@ -39,6 +39,7 @@
 #include "Components/SplineComponent.h"
 
 #include "EditorViewportClient.h"
+#include "HoudiniEngineAttributes.h"
 #include "Engine/Selection.h"
 
 #include "HoudiniEnginePrivatePCH.h"
@@ -219,7 +220,7 @@ FHoudiniSplineTranslator::UpdateHoudiniInputCurves(UHoudiniInput* Input)
 	if (!Input || Input->GetInputType() != EHoudiniInputType::Curve)
 		return;
 
-	TArray<UHoudiniInputObject*> *InputObjectArray = Input->GetHoudiniInputObjectArray(EHoudiniInputType::Curve);
+	TArray<TObjectPtr<UHoudiniInputObject>> *InputObjectArray = Input->GetHoudiniInputObjectArray(EHoudiniInputType::Curve);
 	if (!InputObjectArray)
 		return;
 
@@ -322,10 +323,8 @@ FHoudiniSplineTranslator::UpdateHoudiniCurve(UHoudiniSplineComponent* HoudiniSpl
 	}
 
 	TArray<float> RefinedCurvePositions;
-	HAPI_AttributeInfo AttributeRefinedCurvePositions;
-	FHoudiniApi::AttributeInfo_Init(&AttributeRefinedCurvePositions);
-	if (!FHoudiniEngineUtils::HapiGetAttributeDataAsFloat(
-		CurveNode_id, 0, HAPI_UNREAL_ATTRIB_POSITION, AttributeRefinedCurvePositions, RefinedCurvePositions))
+	FHoudiniHapiAccessor Accessor(CurveNode_id, 0, HAPI_UNREAL_ATTRIB_POSITION);
+	if (!Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, RefinedCurvePositions))
 	{
 		return false;
 	}
@@ -392,14 +391,11 @@ bool FHoudiniSplineTranslator::UpdateHoudiniCurveLegacy(UHoudiniSplineComponent*
 	// We need to get the NodeInfo to get the parent id
 	HAPI_NodeInfo NodeInfo;
 	FHoudiniApi::NodeInfo_Init(&NodeInfo);
-	HOUDINI_CHECK_ERROR_RETURN(	FHoudiniApi::GetNodeInfo(
-		FHoudiniEngine::Get().GetSession(), CurveNode_id, &NodeInfo), false);
+	HOUDINI_CHECK_ERROR_RETURN(	FHoudiniApi::GetNodeInfo(FHoudiniEngine::Get().GetSession(), CurveNode_id, &NodeInfo), false);
 
 	TArray<float> RefinedCurvePositions;
-	HAPI_AttributeInfo AttributeRefinedCurvePositions;
-	FHoudiniApi::AttributeInfo_Init(&AttributeRefinedCurvePositions);
-	if (!FHoudiniEngineUtils::HapiGetAttributeDataAsFloat(
-		CurveNode_id, 0, HAPI_UNREAL_ATTRIB_POSITION, AttributeRefinedCurvePositions, RefinedCurvePositions))
+	FHoudiniHapiAccessor Accessor(CurveNode_id, 0 , HAPI_UNREAL_ATTRIB_POSITION);
+	if (!Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, RefinedCurvePositions))
 	{
 		return false;
 	}
@@ -437,6 +433,8 @@ FHoudiniSplineTranslator::HapiUpdateNodeForHoudiniSplineComponent(
 	UHoudiniSplineComponent* HoudiniSplineComponent,
 	bool bInAddRotAndScaleAttributes)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniSplineTranslator::HapiUpdateNodeForHoudiniSplineComponent);
+
 	if (!IsValid(HoudiniSplineComponent))
 		return true;
 
@@ -1432,8 +1430,7 @@ FHoudiniSplineTranslator::HapiCreateCurveInputNodeForDataLegacy(
 	}
 
 	// Finally, commit the geo ...
-	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::CommitGeo(
-		FHoudiniEngine::Get().GetSession(), CurveNodeId), false);
+	HOUDINI_CHECK_ERROR_RETURN(FHoudiniEngineUtils::HapiCommitGeo(CurveNodeId), false);
 
 	// And cook it with refinement enabled
 	CookOptions.refineCurveToLinear = true;
@@ -1504,7 +1501,7 @@ FHoudiniSplineTranslator::HapiCreateCurveInputNode(
 	else
 	{
 		HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::CreateInputCurveNode(
-			FHoudiniEngine::Get().GetSession(), &NewNodeId, TCHAR_TO_UTF8(*InputNodeName)), false);
+			FHoudiniEngine::Get().GetSession(), -1, &NewNodeId, TCHAR_TO_UTF8(*InputNodeName)), false);
 
 		OutCurveNodeId = NewNodeId;
 
@@ -1519,6 +1516,7 @@ FHoudiniSplineTranslator::HapiCreateCurveInputNode(
 UHoudiniSplineComponent* 
 FHoudiniSplineTranslator::CreateHoudiniSplineComponentFromHoudiniEditableNode(const int32 & GeoId, const FString & PartName, UObject* OuterComponent) 
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniSplineTranslator::CreateHoudiniSplineComponentFromHoudiniEditableNode);
 	if (GeoId < 0)
 		return nullptr;
 
@@ -1638,9 +1636,11 @@ FHoudiniSplineTranslator::CreateOutputUnrealSplineComponent(
 	NewSplineComponent->ClearSplinePoints();
 	NewSplineComponent->bEditableWhenInherited = false;
  
+	ESplinePointType::Type SplinePointType = bIsLinear ? ESplinePointType::Linear : ESplinePointType::Curve;
 	for (int32 n = 0; n < CurvePoints.Num(); ++n) 
 	{
 		NewSplineComponent->AddSplinePoint(CurvePoints[n], ESplineCoordinateSpace::Local);
+		NewSplineComponent->SetSplinePointType(n, SplinePointType);
 	}
 
 	bool bHasScales = CurveScales.Num() == CurvePoints.Num();
@@ -1657,21 +1657,9 @@ FHoudiniSplineTranslator::CreateOutputUnrealSplineComponent(
 	{
 		for (int32 n = 0; n < CurvePoints.Num(); ++n)
 		{
-			NewSplineComponent->SetRotationAtSplinePoint(n, CurveRotations[n].Rotation(), ESplineCoordinateSpace::Local, false);
+			NewSplineComponent->SetRotationAtSplinePoint(n, FRotator::MakeFromEuler(CurveRotations[n]), ESplineCoordinateSpace::Local, false);
 		}
 	}
-
-	if (bIsLinear)
-	{
-		for (int32 n = 0; n < CurvePoints.Num(); ++n)
-			NewSplineComponent->SetSplinePointType(n, ESplinePointType::Linear);
-	}
-	else 
-	{
-		for (int32 n = 0; n < CurvePoints.Num(); ++n)
-			NewSplineComponent->SetSplinePointType(n, ESplinePointType::Curve);
-	}
-
 
 	NewSplineComponent->SetClosedLoop(bIsClosed);
 
@@ -1728,8 +1716,8 @@ FHoudiniSplineTranslator::UpdateOutputUnrealSplineComponent(
 	if (bHasRotations)
 	{
 		for (int32 n = 0; n < CurvePoints.Num(); ++n)
-		{
-			EditedSplineComponent->SetRotationAtSplinePoint(n, CurveRotations[n].Rotation(), ESplineCoordinateSpace::Local, false);
+		{			
+			EditedSplineComponent->SetRotationAtSplinePoint(n, FRotator::MakeFromEuler(CurveRotations[n]), ESplineCoordinateSpace::Local, false);
 		}
 	}
 
@@ -1793,15 +1781,6 @@ FHoudiniSplineTranslator::CreateOutputSplinesFromHoudiniGeoPartObject(
 	const bool& bIsLinear,
 	const bool& bIsClosed) 
 {
-	// If we're not forcing the rebuild
-	// No need to recreate something that hasn't changed
-	if (!InForceRebuild && (!InHGPO.bHasGeoChanged || !InHGPO.bHasPartChanged))
-	{
-		// Simply reuse the existing meshes
-		OutSplines = InSplines;
-		return true;
-	}
-
 	if (!IsValid(InOuterComponent))
 		return false;
 
@@ -1811,23 +1790,21 @@ FHoudiniSplineTranslator::CreateOutputSplinesFromHoudiniGeoPartObject(
 		return false;	
 
 	// Extract all curve points from this HGPO
+
 	TArray<float> RefinedCurvePositions;
-	HAPI_AttributeInfo AttributeRefinedCurvePositions;
-	FHoudiniApi::AttributeInfo_Init(&AttributeRefinedCurvePositions);
-	FHoudiniEngineUtils::HapiGetAttributeDataAsFloat(
-		CurveNodeId, CurvePartId, HAPI_UNREAL_ATTRIB_POSITION, AttributeRefinedCurvePositions, RefinedCurvePositions);
+	FHoudiniHapiAccessor Accessor;
+	Accessor.Init(CurveNodeId, CurvePartId, HAPI_UNREAL_ATTRIB_POSITION);
+	Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, RefinedCurvePositions);
 
 	TArray<float> RefinedCurveRotations;
 	HAPI_AttributeInfo AttributeRefinedCurveRotations;
-	FHoudiniApi::AttributeInfo_Init(&AttributeRefinedCurveRotations);
-	FHoudiniEngineUtils::HapiGetAttributeDataAsFloat(
-		CurveNodeId, CurvePartId, HAPI_UNREAL_ATTRIB_ROTATION, AttributeRefinedCurveRotations, RefinedCurveRotations);
+	Accessor.Init(CurveNodeId, CurvePartId, HAPI_UNREAL_ATTRIB_ROTATION);
+	Accessor.GetInfo(AttributeRefinedCurveRotations, HAPI_ATTROWNER_INVALID);
+	Accessor.GetAttributeData(AttributeRefinedCurveRotations, RefinedCurveRotations);
 
 	TArray<float> RefinedCurveScales;
-	HAPI_AttributeInfo AttributeRefinedCurveScales;
-	FHoudiniApi::AttributeInfo_Init(&AttributeRefinedCurveScales);
-	FHoudiniEngineUtils::HapiGetAttributeDataAsFloat(
-		CurveNodeId, CurvePartId, HAPI_UNREAL_ATTRIB_SCALE, AttributeRefinedCurveScales, RefinedCurveScales);
+	Accessor.Init(CurveNodeId, CurvePartId, HAPI_UNREAL_ATTRIB_SCALE);
+	Accessor.GetAttributeData(HAPI_ATTROWNER_INVALID, RefinedCurveScales);
 
 	HAPI_CurveInfo CurveInfo;
 	FHoudiniApi::CurveInfo_Init(&CurveInfo);
@@ -2146,6 +2123,7 @@ FHoudiniSplineTranslator::CreateOutputSplinesFromHoudiniGeoPartObject(
 bool 
 FHoudiniSplineTranslator::CreateAllSplinesFromHoudiniOutput(UHoudiniOutput* InOutput, UObject* InOuterComponent)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniSplineTranslator::CreateAllSplinesFromHoudiniOutput);
 	if (!IsValid(InOutput))
 		return false;
 
@@ -2172,47 +2150,28 @@ FHoudiniSplineTranslator::CreateAllSplinesFromHoudiniOutput(UHoudiniOutput* InOu
 			continue;
 
 		// Check if we want to create a houdini output curve from corresponding attribute
-		HAPI_AttributeInfo CurveOutputAttriInfo;
-		FHoudiniApi::AttributeInfo_Init(&CurveOutputAttriInfo);
 		TArray<int> IntData;
 		IntData.Empty();
-
-		if (!FHoudiniEngineUtils::HapiGetAttributeDataAsInteger(
-			CurHGPO.GeoId, CurHGPO.PartId, HAPI_UNREAL_ATTRIB_OUTPUT_UNREAL_CURVE, 
-			CurveOutputAttriInfo, IntData, 1, HAPI_ATTROWNER_PRIM, 0, 1))
+		FHoudiniHapiAccessor Accessor(CurHGPO.GeoId, CurHGPO.PartId, HAPI_UNREAL_ATTRIB_OUTPUT_UNREAL_CURVE);
+		bool bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_PRIM, 1, IntData, 0, 1);
+		if (!bSuccess || IntData.Num() <= 0 || IntData[0] == 0)
 			continue;
 
-		if (IntData.Num() <= 0)
-			continue;
-		
-		if (IntData[0] == 0)
-			continue;
-
-		HAPI_AttributeInfo LinearAttriInfo;
-		FHoudiniApi::AttributeInfo_Init(&LinearAttriInfo);
 		IntData.Empty();
-
 		bool bIsLinear = false;
-		if (FHoudiniEngineUtils::HapiGetAttributeDataAsInteger(
-			CurHGPO.GeoId, CurHGPO.PartId, HAPI_UNREAL_ATTRIB_OUTPUT_UNREAL_CURVE_LINEAR,
-			LinearAttriInfo, IntData, 1, HAPI_ATTROWNER_PRIM, 0, 1))
+		Accessor.Init(CurHGPO.GeoId, CurHGPO.PartId, HAPI_UNREAL_ATTRIB_OUTPUT_UNREAL_CURVE_LINEAR);
+		if (Accessor.GetAttributeData(HAPI_ATTROWNER_PRIM, 1, IntData, 0, 1))
 		{
 			if (IntData.Num() > 0)
 				bIsLinear = IntData[0] != 0;
 		}
 
-		HAPI_AttributeInfo ClosedAttriInfo;
-		FHoudiniApi::AttributeInfo_Init(&ClosedAttriInfo);
 		IntData.Empty();
-
+		Accessor.Init(CurHGPO.GeoId, CurHGPO.PartId, HAPI_UNREAL_ATTRIB_OUTPUT_UNREAL_CURVE_CLOSED);
+		bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_PRIM, 1, IntData, 0, 1 );
 		bool bIsClosed = false;
-		if (FHoudiniEngineUtils::HapiGetAttributeDataAsInteger(
-			CurHGPO.GeoId, CurHGPO.PartId, HAPI_UNREAL_ATTRIB_OUTPUT_UNREAL_CURVE_CLOSED,
-			ClosedAttriInfo, IntData, 1, HAPI_ATTROWNER_PRIM, 0, 1))
-		{
-			if (IntData.Num() > 0)
-				bIsClosed = IntData[0] != 0;
-		}
+		if (IntData.Num() > 0)
+			bIsClosed = IntData[0] != 0;
 
 		// We output curve to Unreal Spline only for now
 		// May support output to Houdini Spline later
@@ -2245,7 +2204,8 @@ FHoudiniSplineTranslator::CreateAllSplinesFromHoudiniOutput(UHoudiniOutput* InOu
 
 	InOutput->SetOutputObjects(NewOutputObjects);
 
-	FHoudiniEngineUtils::UpdateEditorProperties(InOutput, true);
+	// TODO: remove and delay editor propreties update
+	FHoudiniEngineUtils::UpdateEditorProperties(true);
 
 	return true;
 }

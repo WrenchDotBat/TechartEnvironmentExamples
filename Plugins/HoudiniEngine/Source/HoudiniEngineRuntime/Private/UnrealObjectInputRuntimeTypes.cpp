@@ -133,6 +133,8 @@ FUnrealObjectInputOptions::FUnrealObjectInputOptions()
 	, bExportPerEditLayerData(false)
 	, bExportLevelInstanceContent(true)
 	, bExportSelectedComponentsOnly(false)
+	, BoolOptions()
+	, BoolOptionsHash(0)
 	, SelectedComponents()
 	, SelectedComponentsHash(0)
 {
@@ -171,7 +173,7 @@ FUnrealObjectInputOptions::MakeOptionsForLevelInstanceActor(const FHoudiniInputO
 			Options.bLandscapeExportNormalizedUVs = InInputSettings.bLandscapeExportNormalizedUVs;
 			Options.bLandscapeExportTileUVs = InInputSettings.bLandscapeExportTileUVs;
 		}
-		Options.bExportPerEditLayerData = InInputSettings.bExportPerEditLayerData;
+		Options.bExportPerEditLayerData = InInputSettings.bExportHeightDataPerEditLayer;
 		Options.bExportLandscapeSplineControlPoints = InInputSettings.bLandscapeSplinesExportControlPoints;
 		Options.bExportLandscapeSplineLeftRightCurves = InInputSettings.bLandscapeSplinesExportLeftRightCurves;
 	}
@@ -182,7 +184,7 @@ FUnrealObjectInputOptions::MakeOptionsForLevelInstanceActor(const FHoudiniInputO
 
 
 FUnrealObjectInputOptions
-FUnrealObjectInputOptions::MakeOptionsForLandscapeActor(const FHoudiniInputObjectSettings& InInputSettings, const TSet<ULandscapeComponent*>* InSelectedComponents)
+FUnrealObjectInputOptions::MakeOptionsForLandscapeActor(const FHoudiniInputObjectSettings& InInputSettings, const TSet<TObjectPtr<ULandscapeComponent>>* InSelectedComponents)
 {
 	FUnrealObjectInputOptions Options = MakeOptionsForLandscapeSplineActor(InInputSettings);
 	if (!Options.bImportAsReference)
@@ -195,7 +197,7 @@ FUnrealObjectInputOptions::MakeOptionsForLandscapeActor(const FHoudiniInputObjec
 			Options.bLandscapeExportNormalizedUVs = InInputSettings.bLandscapeExportNormalizedUVs;
 			Options.bLandscapeExportTileUVs = InInputSettings.bLandscapeExportTileUVs;
 		}
-		Options.bExportPerEditLayerData = InInputSettings.bExportPerEditLayerData;
+		Options.bExportPerEditLayerData = InInputSettings.bExportHeightDataPerEditLayer;
 		Options.bExportSelectedComponentsOnly = InInputSettings.bLandscapeExportSelectionOnly;
 		if (Options.bExportSelectedComponentsOnly && InSelectedComponents)
 			Options.SetSelectedComponents(*InSelectedComponents);
@@ -206,7 +208,7 @@ FUnrealObjectInputOptions::MakeOptionsForLandscapeActor(const FHoudiniInputObjec
 
 
 FUnrealObjectInputOptions
-FUnrealObjectInputOptions::MakeOptionsForLandscapeData(const FHoudiniInputObjectSettings& InInputSettings, const TSet<ULandscapeComponent*>* InSelectedComponents)
+FUnrealObjectInputOptions::MakeOptionsForLandscapeData(const FHoudiniInputObjectSettings& InInputSettings, const TSet<TObjectPtr<ULandscapeComponent>>* InSelectedComponents)
 {
 	FUnrealObjectInputOptions Options;
 	Options.bImportAsReference = InInputSettings.bImportAsReference;
@@ -221,7 +223,7 @@ FUnrealObjectInputOptions::MakeOptionsForLandscapeData(const FHoudiniInputObject
 			Options.bLandscapeExportNormalizedUVs = InInputSettings.bLandscapeExportNormalizedUVs;
 			Options.bLandscapeExportTileUVs = InInputSettings.bLandscapeExportTileUVs;
 		}
-		Options.bExportPerEditLayerData = InInputSettings.bExportPerEditLayerData;
+		Options.bExportPerEditLayerData = InInputSettings.bExportHeightDataPerEditLayer;
 		Options.bExportSelectedComponentsOnly = InInputSettings.bLandscapeExportSelectionOnly;
 		if (Options.bExportSelectedComponentsOnly && InSelectedComponents)
 			Options.SetSelectedComponents(*InSelectedComponents);
@@ -264,6 +266,33 @@ FUnrealObjectInputOptions::MakeOptionsForGenericActor(const FHoudiniInputObjectS
 	// Options.bExportLevelInstanceContent = InInputSettings.bExportLevelInstanceContent;
 
 	return Options;
+}
+
+
+void
+FUnrealObjectInputOptions::ComputeBoolOptionsHash()
+{
+	if (BoolOptions.Num() == 0)
+	{
+		BoolOptionsHash = 0;
+		return;
+	}
+
+	TArray<TTuple<FName, bool>> BoolOptionsArray;
+#if ENGINE_MAJOR_VERSION > 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 1)
+	BoolOptionsArray = BoolOptions.Array();
+#else
+	BoolOptionsArray.Reserve(BoolOptions.Num());
+	for (const auto& BoolOption : BoolOptions)
+	{
+		BoolOptionsArray.Add(BoolOption);
+	}
+#endif
+	BoolOptionsArray.StableSort([](const TTuple<FName, bool>& InLHS, const TTuple<FName, bool>& InRHS)
+	{
+		return InLHS.Key.ToString() < InRHS.Key.ToString();
+	});
+	BoolOptionsHash = _GetArrayHash(BoolOptionsArray.GetData(), BoolOptionsArray.Num());
 }
 
 
@@ -341,6 +370,15 @@ FUnrealObjectInputOptions::GenerateNodeNameSuffix() const
 		NameParts.Add(TEXT("landscape_edit_layers"));
 	if (!bExportLevelInstanceContent)
 		NameParts.Add(TEXT("level_instance_ref"));
+	if (BoolOptions.Num() > 0)
+	{
+		for (const auto& BoolOption : BoolOptions)
+		{
+			if (!BoolOption.Value)
+				continue;
+			NameParts.Add(BoolOption.Key.ToString());
+		}
+	}
 	if (bExportSelectedComponentsOnly)
 	{
 		NameParts.Add(TEXT("selected_components"));
@@ -387,11 +425,13 @@ FUnrealObjectInputOptions::GetTypeHash() const
 		bExportSelectedComponentsOnly,
 	};
 	
-	const uint32 HashA = HashCombineFast(_GetArrayHash(ByteOptions, NumByteOptions), ::GetTypeHash(UnrealSplineResolution));
+	uint32 Hash = HashCombineFast(_GetArrayHash(ByteOptions, NumByteOptions), ::GetTypeHash(UnrealSplineResolution));
+	if (BoolOptions.Num() > 0)
+		Hash = HashCombineFast(Hash, BoolOptionsHash);
 	if (!bExportSelectedComponentsOnly)
-		return HashA;
+		return Hash;
 	
-	return HashCombineFast(HashA, SelectedComponentsHash);
+	return HashCombineFast(Hash, SelectedComponentsHash);
 }
 
 bool
@@ -416,8 +456,19 @@ FUnrealObjectInputOptions::operator==(const FUnrealObjectInputOptions& InOther) 
 		bExportLandscapeSplineLeftRightCurves != InOther.bExportLandscapeSplineLeftRightCurves ||
 		bExportPerEditLayerData != InOther.bExportPerEditLayerData ||
 		bExportLevelInstanceContent != InOther.bExportLevelInstanceContent ||
+		BoolOptions.Num() != InOther.BoolOptions.Num() ||
 		bExportSelectedComponentsOnly != InOther.bExportSelectedComponentsOnly)
 			return false;
+
+	// Compare bool options
+	for (const auto& BoolOption : BoolOptions)
+	{
+		bool const* const OtherValue = InOther.BoolOptions.Find(BoolOption.Key);
+		if (!OtherValue)
+			return false;
+		if (BoolOption.Value != *OtherValue)
+			return false;
+	}
 
 	if (!bExportSelectedComponentsOnly)
 		return true;
@@ -1115,7 +1166,11 @@ FUnrealObjectInputNode::DestroyModifiers(const FName InChainName)
 	while (Chain->Modifiers.Num() > 0)
 	{
 		static constexpr bool bAllowShrinking = false;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 5
+		FUnrealObjectInputModifier* const Modifier = Chain->Modifiers.Pop(bAllowShrinking ? EAllowShrinking::Yes : EAllowShrinking::No);
+#else
 		FUnrealObjectInputModifier* const Modifier = Chain->Modifiers.Pop(bAllowShrinking);
+#endif
 		if (!Modifier)
 			continue;
 		Modifier->OnRemovedFromOwner();

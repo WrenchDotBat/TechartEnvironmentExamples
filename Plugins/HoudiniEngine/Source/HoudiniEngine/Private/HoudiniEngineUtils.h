@@ -53,6 +53,28 @@ enum class EHoudiniCurveType : int8;
 enum class EHoudiniCurveMethod : int8;
 enum class EHoudiniInstancerType : uint8;
 
+#define H_DEPRECATED_OLD_ATTRIBUTE_API(Version, Message)  [[deprecated(Message " Please update your code to the new API before upgrading to the next release, otherwise your project will no longer compile.")]]
+
+class FHoudiniParameterWidgetMetaData : public ISlateMetaData
+{
+public:
+	SLATE_METADATA_TYPE(FHoudiniParameterWidgetMetaData, ISlateMetaData)
+
+	FHoudiniParameterWidgetMetaData(const FString& UniqueName, const uint32 Index)
+		: UniqueName(UniqueName)
+		, Index(Index)
+	{
+	}
+
+	bool operator==(const FHoudiniParameterWidgetMetaData& Other) const
+	{
+		return UniqueName == Other.UniqueName && Index == Other.Index;
+	}
+
+	const FString UniqueName;
+	const uint32 Index;
+};
+
 struct HOUDINIENGINE_API FHoudiniEngineUtils
 {
 	friend struct FUnrealMeshTranslator;
@@ -75,6 +97,9 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 		// if the cook options are null, the defualt one will be used
 		// if bWaitForCompletion is true, this call will be blocking until the cook is finished
 		static bool HapiCookNode(const HAPI_NodeId& InNodeId, HAPI_CookOptions* InCookOptions = nullptr, const bool& bWaitForCompletion = false);
+
+		// Wrapper for CommitGeo - adds a profiler scope wrapper
+		static HAPI_Result HapiCommitGeo(const HAPI_NodeId& InNodeId);
 
 		// Return a specified HAPI status string.
 		static const FString GetStatusString(HAPI_StatusType status_type, HAPI_StatusVerbosity verbosity);
@@ -180,9 +205,10 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 		static bool GetOutputIndex(const HAPI_NodeId& InNodeId, int32& OutOutputIndex);
 
 		static bool GatherAllAssetOutputs(
-			const HAPI_NodeId& InAssetId,
-			const bool bUseOutputNodes,
-			const bool bOutputTemplatedGeos,
+			HAPI_NodeId InAssetId,
+			bool bUseOutputNodes,
+			bool bOutputTemplatedGeos,
+			bool bGatherEditableCurves,
 			TArray<HAPI_NodeId>& OutOutputNodes); 
 
 		// Get the immediate output geo infos for the given Geometry object network.
@@ -220,9 +246,9 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			TArray<int32>& OutGroupMembership, bool& OutAllEquals);
 
 		static bool HapiGetGroupMembership(
-			HAPI_NodeId GeoId, const HAPI_PartId & PartId,
+			HAPI_NodeId GeoId, HAPI_PartId PartId,
 			const HAPI_GroupType& GroupType, const FString& GroupName,
-			int32 & OutGroupMembership);
+			int32 & OutGroupMembership, int Start = 0, int Length = 1);
 
 		// HAPI : Given vertex list, retrieve new vertex list for a specified group.
 		// Return number of processed valid index vertices for this split.
@@ -240,6 +266,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const bool& isPackedPrim);
 
 		// HAPI : Get attribute data as float.
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static bool HapiGetAttributeDataAsFloat(
 			const HAPI_NodeId& InGeoId,
 			const HAPI_PartId& InPartId,
@@ -252,6 +279,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const int32& InCount = -1);
 
 		// HAPI : Get attribute data as Integer.
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static bool HapiGetAttributeDataAsInteger(
 			const HAPI_NodeId InGeoId,
 			const HAPI_PartId InPartId,
@@ -264,6 +292,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const int32 InCount = -1);
 
 		// HAPI : Get attribute data as strings.
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static bool HapiGetAttributeDataAsString(
 			const HAPI_NodeId& InGeoId,
 			const HAPI_PartId& InPartId,
@@ -341,6 +370,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 
 		// Retreives the first value of an attribute. OutData is left unchanged
 		// if there is an error.
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static bool HapiGetFirstAttributeValueAsString(
 			const HAPI_NodeId& InGeoId,
 			const HAPI_PartId& InPartId,
@@ -396,7 +426,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 		static bool GetHoudiniAssetName(const HAPI_NodeId& AssetNodeId, FString & NameString);
 
 		// Gets preset data for a given asset.
-		static bool GetAssetPreset(const HAPI_NodeId& AssetNodeId, TArray< char > & PresetBuffer);
+		static bool GetAssetPreset(const HAPI_NodeId& AssetNodeId, TArray<int8>& PresetBuffer);
 
 		// HAPI : Set asset transform.
 		static bool HapiSetAssetTransform(const HAPI_NodeId& AssetNodeId, const FTransform & Transform);
@@ -407,12 +437,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 		// Triggers an update the details panel
 		// Will use an AsyncTask if we're not in the game thread
 		// NOTE: Prefer using IDetailLayoutBuilder::ForceRefreshDetails() instead.
-		static void UpdateEditorProperties(UObject* InObjectToUpdate, const bool& InForceFullUpdate);
-
-		// Triggers an update the details panel
-		// Will use an AsyncTask if we're not in the game thread
-		// NOTE: Prefer using IDetailLayoutBuilder::ForceRefreshDetails() instead.
-		static void UpdateEditorProperties(TArray<UObject*> InObjectsToUpdate, const bool& InForceFullUpdate);
+		static void UpdateEditorProperties(const bool bInForceFullUpdate);
 
 		// Triggers an update the details panel
 		static void UpdateBlueprintEditor(UHoudiniAssetComponent* HAC);
@@ -422,6 +447,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 
 		// Helper function to set float attribute data
 		// The data will be sent in chunks if too large for thrift
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeFloatData(
 			const TArray<float>& InFloatData,
 			const HAPI_NodeId& InNodeId,
@@ -430,6 +456,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const HAPI_AttributeInfo& InAttributeInfo,
 			bool bAttemptRunLengthEncoding = false);
 
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeFloatData(
 			const float* InFloatData,
 			const HAPI_NodeId& InNodeId,
@@ -439,6 +466,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			bool bAttemptRunLengthEncoding = false);
 
 		// Helper function for setting unique float values
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeFloatUniqueData(
 			const float InFloatData,
 			const HAPI_NodeId& InNodeId,
@@ -448,6 +476,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 
 		// Helper function to set Int attribute data
 		// The data will be sent in chunks if too large for thrift
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeIntData(
 			const TArray<int32>& InIntData,
 			const HAPI_NodeId& InNodeId,
@@ -456,6 +485,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const HAPI_AttributeInfo& InAttributeInfo,
             bool bAttemptRunLengthEncoding = false);
 
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeIntData(
 			const int32* InIntData,
 			const HAPI_NodeId& InNodeId,
@@ -465,6 +495,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
             bool bAttemptRunLengthEncoding = false);
 
 		// Helper function for setting unique int values
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeIntUniqueData(
 			const int32 InIntData,
 			const HAPI_NodeId& InNodeId,
@@ -474,6 +505,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 
 		// Helper function to set unsigned Int attribute data
 		// The data will be sent in chunks if too large for thrift
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeUIntData(
 			const TArray<int64>& InIntData,
 			const HAPI_NodeId& InNodeId,
@@ -481,6 +513,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const FString& InAttributeName,
 			const HAPI_AttributeInfo& InAttributeInfo);
 
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeUIntData(
 			const int64* InIntData,
 			const HAPI_NodeId& InNodeId,
@@ -490,6 +523,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 
 		// Helper function to set signed int8 attribute data
 		// The data will be sent in chunks if too large for thrift
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeInt8Data(
 			const TArray<int8>& InByteData,
 			const HAPI_NodeId& InNodeId,
@@ -497,6 +531,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const FString& InAttributeName,
 			const HAPI_AttributeInfo& InAttributeInfo);
 
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeInt8Data(
 			const int8* InByteData,
 			const HAPI_NodeId& InNodeId,
@@ -506,6 +541,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 
 		// Helper function to set Byte attribute data
 		// The data will be sent in chunks if too large for thrift
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeUInt8Data(
 			const TArray<uint8>& InByteData,
 			const HAPI_NodeId& InNodeId,
@@ -513,6 +549,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const FString& InAttributeName,
 			const HAPI_AttributeInfo& InAttributeInfo);
 
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeUInt8Data(
 			const uint8* InByteData,
 			const HAPI_NodeId& InNodeId,
@@ -522,6 +559,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 
 		// Helper function to set signed int16 attribute data
 		// The data will be sent in chunks if too large for thrift
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeInt16Data(
 			const TArray<int16>& InShortData,
 			const HAPI_NodeId& InNodeId,
@@ -529,6 +567,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const FString& InAttributeName,
 			const HAPI_AttributeInfo& InAttributeInfo);
 
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeInt16Data(
 			const int16* InShortData,
 			const HAPI_NodeId& InNodeId,
@@ -538,6 +577,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 
 		// Helper function to set uint16 attribute data
 		// The data will be sent in chunks if too large for thrift
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeUInt16Data(
 			const TArray<int32>& InShortData,
 			const HAPI_NodeId& InNodeId,
@@ -545,6 +585,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const FString& InAttributeName,
 			const HAPI_AttributeInfo& InAttributeInfo);
 
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeUInt16Data(
 			const int32* InShortData,
 			const HAPI_NodeId& InNodeId,
@@ -554,6 +595,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 
 		// Helper function to set Int64 attribute data
 		// The data will be sent in chunks if too large for thrift
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeInt64Data(
 			const TArray<int64>& InInt64Data,
 			const HAPI_NodeId& InNodeId,
@@ -561,6 +603,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const FString& InAttributeName,
 			const HAPI_AttributeInfo& InAttributeInfo);
 
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeInt64Data(
 			const int64* InInt64Data,
 			const HAPI_NodeId& InNodeId,
@@ -570,6 +613,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 
 		// Helper function to set unsigned Int64 attribute data
 		// The data will be sent in chunks if too large for thrift
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeUInt64Data(
 			const TArray<int64>& InInt64Data,
 			const HAPI_NodeId& InNodeId,
@@ -577,15 +621,9 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const FString& InAttributeName,
 			const HAPI_AttributeInfo& InAttributeInfo);
 
-		static HAPI_Result HapiSetAttributeUInt64Data(
-			const int64* InInt64Data,
-			const HAPI_NodeId& InNodeId,
-			const HAPI_PartId& InPartId,
-			const FString& InAttributeName,
-			const HAPI_AttributeInfo& InAttributeInfo);
-
 		// Helper function to set Double attribute data
 		// The data will be sent in chunks if too large for thrift
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeDoubleData(
 			const TArray<double>& InDoubleData,
 			const HAPI_NodeId& InNodeId,
@@ -593,6 +631,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const FString& InAttributeName,
 			const HAPI_AttributeInfo& InAttributeInfo);
 
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeDoubleData(
 			const double* InDoubleData,
 			const HAPI_NodeId& InNodeId,
@@ -615,7 +654,8 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const HAPI_PartId& InPartId);
 
 		// Helper function to set attribute string data for a single FString
-		static HAPI_Result HapiSetAttributeStringData(
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
+		static HAPI_Result HapiSetAttributeStringUniqueData(
 			const FString& InString,
 			const HAPI_NodeId& InNodeId,
 			const HAPI_PartId& InPartId,
@@ -624,6 +664,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 
 		// Helper function to set attribute string data for a FString array
 		// The data will be sent in chunks if too large for thrift
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeStringData(
 			const TArray<FString>& InStringArray,
 			const HAPI_NodeId& InNodeId,
@@ -631,6 +672,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const FString& InAttributeName,
 			const HAPI_AttributeInfo& InAttributeInfo);
 
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeStringMap(
 			const FHoudiniEngineIndexedStringMap& InIndexedStringMap,
 			const HAPI_NodeId& InNodeId,
@@ -638,6 +680,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const FString& InAttributeName,
 			const HAPI_AttributeInfo& InAttributeInfo);
 
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
 		static HAPI_Result HapiSetAttributeStringArrayData(
 			const TArray<FString>& InStringArray,
 			const HAPI_NodeId& InNodeId,
@@ -645,6 +688,16 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const FString& InAttributeName,
 			const HAPI_AttributeInfo& InAttributeInfo,
 			const TArray<int>& SizesFixedArray);
+
+		// Helper function to set attribute dict data for a FString array
+		// The data will be sent in chunks if too large for thrift
+		H_DEPRECATED_OLD_ATTRIBUTE_API(20.5, "Use FHoudiniHapiAccessor instead.")
+		static HAPI_Result HapiSetAttributeDictionaryData(
+			const TArray<FString>& InStringArray,
+			const HAPI_NodeId& InNodeId,
+			const HAPI_PartId& InPartId,
+			const FString& InAttributeName,
+			const HAPI_AttributeInfo& InAttributeInfo);
 
 
 		// Helper function to set Heightfield data
@@ -654,13 +707,6 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const HAPI_PartId& InPartId,
 			const TArray<float>& InFloatValues,
 			const FString& InHeightfieldName);
-
-		// Helper function to get Heightfield data
-		// The data will be read in chunks if too large for thrift
-		static HAPI_Result HapiGetHeightFieldData(
-			const HAPI_NodeId& InNodeId,
-			const HAPI_PartId& InPartId,
-			TArray<float>& OutFloatValues);
 
 		static bool HapiGetParameterDataAsString(
 			const HAPI_NodeId& NodeId,
@@ -786,8 +832,6 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 		//
 		static bool CreateAttributesFromTags(
 			const HAPI_NodeId& NodeId, const HAPI_PartId& PartId, const TArray<FName>& Tags);
-
-		static bool GetUnrealTagAttributes(const HAPI_NodeId& GeoId, const HAPI_PartId& PartId, TArray<FName>& OutTags);
 
 		// Helper function to access the "unreal_level_path" attribute
 		static bool GetLevelPathAttribute(
@@ -1123,6 +1167,9 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			return Cast<T>( FindOrRenameInvalidActorGeneric(T::StaticClass(), InWorld, InName, OutFoundActor) );
 		}
 
+		// Finds actors with the same Name, but without the post fix number.
+		static TArray<AActor*> FindActorsWithNameNoNumber(UClass* InClass, UWorld* InWorld, const FString & InName);
+
 		// Moves an actor to the specified level
 		static bool MoveActorToLevel(AActor* InActor, ULevel* InDesiredLevel);
 	
@@ -1139,6 +1186,9 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 
 		static FString HapiGetEventTypeAsString(const HAPI_PDG_EventType& InEventType);
 		static FString HapiGetWorkItemStateAsString(const HAPI_PDG_WorkItemState& InWorkItemState);
+
+		static TArray<FString> GetAttributeNames(const HAPI_Session* Session, HAPI_NodeId Node, HAPI_PartId PartId, HAPI_AttributeOwner Owner);
+		static TMap< HAPI_AttributeOwner, TArray<FString>> GetAllAttributeNames(const HAPI_Session * Session, HAPI_NodeId Node, HAPI_PartId PartId);
 
 		// -------------------------------------------------
 		// Generic naming / pathing utilities
@@ -1187,6 +1237,7 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			const UHoudiniAssetComponent* HoudiniAssetComponent,
 			const FHoudiniOutputObjectIdentifier& InIdentifier,
 			const FHoudiniOutputObject& InOutputObject,
+			const bool bInHasPreviousBakeData,
 			const FString &InDefaultObjectName,
 			FHoudiniPackageParams& OutPackageParams,
 			FHoudiniAttributeResolver& OutResolver,
@@ -1211,6 +1262,55 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 			FHoudiniPackageParams& OutPackageParams,
 			FHoudiniAttributeResolver& OutResolver,
 			bool bInSkipTempFolderResolutionAndUseDefault=false);
+
+		// -------------------------------------------------
+		template <typename T>
+		static TArray<TObjectPtr<T>> ToObjectPtr(const TArray<T*>& In)
+		{
+			TArray<TObjectPtr<T>> Result;
+			Result.Reserve(In.Num());
+			for(T* Ptr : In)
+				Result.Add(TObjectPtr<T>(Ptr));
+			return Result;
+		}
+
+		template <typename T>
+		static TSet<TObjectPtr<T>> ToObjectPtr(const TSet<T*>& In)
+		{
+			TSet<TObjectPtr<T>> Result;
+			Result.Reserve(In.Num());
+			for(T* Ptr : In)
+				Result.Add(TObjectPtr<T>(Ptr));
+			return Result;
+		}
+
+		template <typename T>
+		static TSet<T*> RemoveObjectPtr(const TSet<TObjectPtr<T>>& In)
+		{
+			TSet<T*> Result;
+			Result.Reserve(In.Num());
+			for(T* Ptr : In)
+				Result.Add(Ptr);
+			return Result;
+		}
+
+		// -------------------------------------------------
+
+		// -------------------------------------------------
+		// Houdini Engine debug functions
+		// -------------------------------------------------
+
+		static FString DumpNode(HAPI_NodeId NodeId);
+		static void DumpPart(HAPI_NodeId NodeId, HAPI_PartId PartId, FStringBuilderBase& Output);
+		static void DumpNode(const FString & NodePath);
+		static FString CurveTypeToString(HAPI_CurveType CurveType);
+		static FString StorageTypeToString(HAPI_StorageType StorageType);
+		static FString AttributeTypeToString(HAPI_AttributeTypeInfo AttributeType);
+		static FString PartTypeToString(HAPI_PartType PartType);
+		static FString NodeTypeToString(HAPI_NodeType NodeType);
+		static FString DumpAttribute(HAPI_NodeId NodeId, HAPI_PartId PartId, HAPI_AttributeOwner Owner, const FString& Name);
+		static FString RSTOrderToString(HAPI_RSTOrder RstOrder);
+		static FString HapiTransformToString(HAPI_Transform Transform);
 
 		// -------------------------------------------------
 		// Foliage utilities
@@ -1240,6 +1340,74 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 		// (similar to the HAPI function, but allows for specifying a XformType for the created object merge when the two nodes aren't in the same subnet)
 		static bool HapiConnectNodeInput(const int32& InNodeId, const int32& InputIndex, const int32& InNodeIdToConnect, const int32& OutputIndex, const int32& InXFormType);
 
+
+		// -------------------------------------------------
+		// JSON Utilities
+		// -------------------------------------------------
+		static FString JSONToString(const TSharedPtr<FJsonObject>& JSONObject);
+		static bool JSONFromString(const ::FString& JSONString, TSharedPtr<FJsonObject>& OutJSONObject);
+
+		// -------------------------------------------------
+		// Mesh Attribute Utilities
+		// -------------------------------------------------
+
+		// Retrieve Houdini UV sets from the given Mesh part GeoId/PartId.
+		static bool UpdateMeshPartUVSets(
+			const int GeoId,
+			const int PartId,
+			const bool& bRemoveUnused,
+			TArray<TArray<float>>& OutPartUVSets,
+			TArray<HAPI_AttributeInfo>& OutAttribInfoUVSets);
+
+		template <typename DataType>
+		static TArray<int> RunLengthEncode(const DataType* Data, int TupleSize, int Count, float MaxCompressionRatio = 0.25f, int MaxPackets = 500)
+		{
+			// Run length encode the data.
+			// If this function returns an empty array it means the desired compression ratio could not be met.
+
+			auto CompareTuple = [TupleSize](const DataType* StartA, const DataType* StartB)
+			{
+				for (int Index = 0; Index < TupleSize; Index++)
+				{
+					if (StartA[Index] != StartB[Index])
+						return false;
+				}
+				return true;
+			};
+
+			TArray<int> EncodedData;
+			if (Count == 0)
+				return EncodedData;
+
+			// Guess of size needed.
+			EncodedData.Reserve(MaxPackets);
+
+			// The first run always begins on element zero.
+			int Start = 0;
+			EncodedData.Add(Start);
+
+			// Created a run length encoded array based off the input data. eg.
+			// [ 0, 0, 0, 1, 1, 2, 3 ] will return [ 0, 3, 5, 6]
+
+			for (int Index = 0; Index < Count * TupleSize; Index += TupleSize)
+			{
+				if (!CompareTuple(&Data[Start], &Data[Index]))
+				{
+					// The value changed, so start a new run
+					if (EncodedData.Num() == MaxPackets)
+						return {};
+					Start = Index;
+					EncodedData.Add(Start / TupleSize);
+				}
+			}
+
+			// Check we've made a decent compression ratio. If not return an empty array.
+			float Ratio = float(EncodedData.Num() / float(Count));
+			if (Ratio > MaxCompressionRatio)
+				EncodedData.SetNum(0);
+
+			return EncodedData;
+		}
 	protected:
 		
 		// Computes the XX.YY.ZZZ version string using HAPI_Version
@@ -1252,11 +1420,37 @@ struct HOUDINIENGINE_API FHoudiniEngineUtils
 #endif
 
 		// Triggers an update the details panel
-		//static void UpdateEditorProperties_Internal(UObject* ObjectToUpdate, const bool& bInForceFullUpdate);
-
-		// Triggers an update the details panel
-		static void UpdateEditorProperties_Internal(TArray<UObject*> ObjectsToUpdate, const bool& bInForceFullUpdate);
+		static void UpdateEditorProperties_Internal(const bool bInForceFullUpdate);
 
 		// Trigger an update of the Blueprint Editor on the game thread
 		static void UpdateBlueprintEditor_Internal(UHoudiniAssetComponent* HAC);
+
+	private:
+
+		/** 
+		 * Gets FHoudiniParameterWidgetMetaData from focused widget if it exists and has DetailsView
+		 * as a parent.
+		 *
+		 * @see UpdateEditorProperties_Internal
+		 * @see FocusUsingParameterWidgetMetaData
+		 */
+		static TSharedPtr<FHoudiniParameterWidgetMetaData> GetFocusedParameterWidgetMetaData(
+			TSharedPtr<IDetailsView> DetailsView);
+
+		/**
+		 * Sets user focus on a descendant widget that has matching parameter widget metadata.
+		 *
+		 * This is used for a hack needed to maintain user focus on parameter widgets after the
+		 * Details panel is forcibly refreshed.
+		 *
+		 * @param AncestorWidget All descendant widgets will be searched for matching metadata.
+		 * @param ParameterWidgetMetaData Should be unique to the widget which we want to select.
+		 * @return true if a widget was successfully selected, false otherwise.
+		 *
+		 * @see UpdateEditorProperties_Internal
+		 */
+		static bool FocusUsingParameterWidgetMetaData(
+			TSharedRef<SWidget> AncestorWidget,
+			const FHoudiniParameterWidgetMetaData& ParameterWidgetMetaData);
 };
+

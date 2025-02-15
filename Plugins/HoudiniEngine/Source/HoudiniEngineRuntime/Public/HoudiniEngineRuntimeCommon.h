@@ -47,11 +47,16 @@ UENUM()
 enum class EHoudiniEngineBakeOption : uint8
 {
 	ToActor,
-	ToBlueprint,
-	ToFoliage_DEPRECATED,
-	ToWorldOutliner,
+	ToBlueprint
 };
 #endif
+
+UENUM()
+enum class EHoudiniEngineActorBakeOption : uint8
+{
+	OneActorPerComponent,
+	OneActorPerHDA
+};
 
 UENUM()
 enum class EHoudiniLandscapeOutputBakeType : uint8
@@ -65,15 +70,23 @@ enum class EHoudiniLandscapeOutputBakeType : uint8
 UENUM()
 enum class EHoudiniInputType : uint8
 {
-	Invalid,
+	Invalid = 0,
 
-	Geometry,
-	Curve,
-	Asset,
-	Landscape,
-	World,
-	Skeletal,
-	GeometryCollection
+	Geometry = 1,
+
+	Curve = 2,
+
+	/* Asset = 3 - deprecated in Houdini 20 */
+	
+	/* Landscape = 4 - deprecated in Houdini 20 */
+	
+	World = 5
+
+	/* Skeletal = 6 - deprecated in Houdini 20 */
+
+	/* Geometry Collection = 7 - deprecated in Houdini 20 */
+
+	// !! The next input type should be 8 !!
 };
 
 UENUM()
@@ -89,6 +102,7 @@ enum class EHoudiniOutputType : uint8
 	GeometryCollection,
 	DataTable,
 	LandscapeSpline,
+	AnimSequence
 };
 
 UENUM()

@@ -80,6 +80,14 @@ public:
 	// unreal_bake_folder attribute value
 	UPROPERTY()
 	FString BakeFolder;
+
+	// Data Layers which should be applied (during Baking only).
+	UPROPERTY()
+	TArray<FHoudiniDataLayer> DataLayers;
+
+	// HLOD Layers which should be applied (during Baking only).
+	UPROPERTY()
+	TArray<FHoudiniHLODLayer> HLODLayers;
 };
 
 USTRUCT()
@@ -97,7 +105,7 @@ public:
 	bool bForceInstancer = false;
 
 	UPROPERTY()
-	TArray<UObject*> OriginalInstancedObjects;
+	TArray<TObjectPtr<UObject>> OriginalInstancedObjects;
 
 	// Object paths of OriginalInstancedObjects. Used by message passing system
 	// when sending messages from the async importer to the PDG manager. UObject*/references
@@ -207,6 +215,14 @@ public:
 	UPROPERTY()
 	TArray<float> PerInstanceCustomDataFlat;
 
+	// Data Layers which should be applied (during Baking only).
+	UPROPERTY()
+	TArray<FHoudiniAttributeDataLayer> DataLayers;
+
+	// HLOD Layers which should be applied (during Baking only).
+	UPROPERTY()
+	TArray<FHoudiniHLODLayer> HLODLayers;
+
 	void BuildFlatInstancedTransformsAndObjectPaths();
 
 	void BuildOriginalInstancedTransformsAndObjectArrays();
@@ -219,7 +235,8 @@ struct HOUDINIENGINE_API FHoudiniInstanceTranslator
 		static bool PopulateInstancedOutputPartData(
 			const FHoudiniGeoPartObject& InHGPO,
 			const TArray<UHoudiniOutput*>& InAllOutputs,
-			FHoudiniInstancedOutputPartData& OutInstancedOutputPartData);
+			FHoudiniInstancedOutputPartData& OutInstancedOutputPartData,
+			TSet<UObject*>& OutInvisibleObjects);
 
 		static int CreateAllInstancersFromHoudiniOutputs(
 			const TArray<UHoudiniOutput*>& InAllOutputs,
@@ -247,12 +264,13 @@ struct HOUDINIENGINE_API FHoudiniInstanceTranslator
 		static bool GetInstancerObjectsAndTransforms(
 			const FHoudiniGeoPartObject& InHGPO,
 			const TArray<UHoudiniOutput*>& InAllOutputs,
-			TArray<UObject*>& OutInstancedObjects,
+			TArray<TObjectPtr<UObject>>& OutInstancedObjects,
 			TArray<TArray<FTransform>>& OutInstancedTransforms,
 			TArray<TArray<int32>>& OutInstancedIndices,
 			FString& OutSplitAttributeName,
 			TArray<FString>& OutSplitAttributeValues,
-			TMap<FString, FHoudiniInstancedOutputPerSplitAttributes>& OutPerSplitAttributes);
+			TMap<FString, FHoudiniInstancedOutputPerSplitAttributes>& OutPerSplitAttributes,
+			TSet<UObject*> & OutInvisibleObjects);
 
 		static bool GetPackedPrimitiveInstancerHGPOsAndTransforms(
 			const FHoudiniGeoPartObject& InHGPO,
@@ -328,15 +346,15 @@ struct HOUDINIENGINE_API FHoudiniInstanceTranslator
 			TArray<USceneComponent*>& NewComponents,
 			TArray<AActor*>& OldActors,
 			TArray<AActor*>& NewActors,
-			const bool InIsSplitMeshInstancer,
-			const bool InIsFoliageInstancer,
+			bool InIsSplitMeshInstancer,
+			bool InIsFoliageInstancer,
 			const TArray<UMaterialInterface *>& InstancerMaterials,
 			const TArray<int32>& OriginalInstancerObjectIndices, 
 			int32& FoliageTypeCount,
 			UFoliageType*& FoliageTypeUsed,
 			UWorld* & WorldUsed,
-			const bool bForceHISM = false,
-			const bool bForceInstancer = false);
+			bool bForceHISM = false,
+			bool bForceInstancer = false);
 
 		// Create or update an ISMC / HISMC
 		static bool CreateOrUpdateInstancedStaticMeshComponent(
@@ -369,6 +387,15 @@ struct HOUDINIENGINE_API FHoudiniInstanceTranslator
 			USceneComponent* ParentComponent,
 			USceneComponent*& CreatedInstancedComponent,
 			const TArray<UMaterialInterface *>& InstancerMaterials);
+
+	// Helper function used to spawn a new Actor for UHoudiniInstancedActorComponent
+	// Relies on editor-only functionalities, so this function is not on the IAC itself
+	static AActor* SpawnInstanceActor(
+		const FTransform& InTransform,
+		ULevel* InSpawnLevel, 
+		UHoudiniInstancedActorComponent* InIAC,
+		AActor* InReferenceActor,
+		FName Name = NAME_None);
 
 		// Create or update a StaticMeshComponent (when we have only one instance)
 		static bool CreateOrUpdateStaticMeshComponent(

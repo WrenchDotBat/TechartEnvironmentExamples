@@ -28,11 +28,13 @@
 
 #include "IHoudiniEngineEditor.h"
 #include "HoudiniInputTypes.h"
+#include "HoudiniEngineToolTypes.h"
 
 #include "CoreTypes.h"
 #include "Templates/SharedPointer.h"
 #include "Framework/Commands/UICommandList.h"
 #include "Brushes/SlateDynamicImageBrush.h"
+#include "IAssetTools.h"
 
 
 class FExtender;
@@ -44,6 +46,7 @@ class FMenuBuilder;
 class FMenuBarBuilder;
 class FUICommandList;
 class AActor;
+class FHoudiniToolsEditor;
 
 struct IConsoleCommand;
 struct FSlateDynamicImageBrush;
@@ -85,6 +88,9 @@ class HOUDINIENGINEEDITOR_API FHoudiniEngineEditor : public IHoudiniEngineEditor
 		virtual void RegisterEditorTabs() override;
 		virtual void UnRegisterEditorTabs() override;
 
+		void RegisterLevelEditorTabs(TSharedPtr<FTabManager> LevelTabManager);
+		void RegisterLevelEditorLayoutExtensions(FLayoutExtender& Extender);
+	
 		// Return singleton instance of Houdini Engine Editor, used internally.
 		static FHoudiniEngineEditor & Get();
 
@@ -139,6 +145,9 @@ class HOUDINIENGINEEDITOR_API FHoudiniEngineEditor : public IHoudiniEngineEditor
 		// Returns a pointer to the Houdini Engine PDG Bake Package Replace Mode labels
 		TArray<TSharedPtr<FString>>* GetHoudiniEnginePDGBakePackageReplaceModeOptionsLabels() { return &HoudiniEnginePDGBakePackageReplaceModeOptionLabels; };
 
+		// Returns a pointer to the bake actor labels
+		TArray<TSharedPtr<FString>>* GetHoudiniEngineBakeActorOptionsLabels() { return &HoudiniEngineBakeActorOptionsLabels; };
+
 		// Returns a shared Ptr to the Houdini logo
 		TSharedPtr<FSlateDynamicImageBrush> GetHoudiniLogoBrush() const { return HoudiniLogoBrush; };
 		TSharedPtr<FSlateDynamicImageBrush> GetHoudiniEngineLogoBrush() const { return HoudiniEngineLogoBrush; };
@@ -164,27 +173,34 @@ class HOUDINIENGINEEDITOR_API FHoudiniEngineEditor : public IHoudiniEngineEditor
 		TArray<TSharedPtr<FString>>* GetUnrealOutputCurveTypeLabels() { return &UnrealCurveOutputCurveTypeLabels; };
 
 		// returns string from Houdini Engine Bake Option
-		FString GetStringFromHoudiniEngineBakeOption(const EHoudiniEngineBakeOption & BakeOption);
+		static FString GetStringFromHoudiniEngineBakeOption(EHoudiniEngineBakeOption BakeOption);
 
 		// returns string from Houdini Engine PDG Bake Target Option
-		FString GetStringFromPDGBakeTargetOption(const EPDGBakeSelectionOption& BakeOption);
+		static FString GetStringFromPDGBakeTargetOption(EPDGBakeSelectionOption BakeOption);
 
 		// returns string from PDG package replace mode option
-		FString GetStringFromPDGBakePackageReplaceModeOption(const EPDGBakePackageReplaceModeOption & InOption);
-	
+		static FString GetStringFromPDGBakePackageReplaceModeOption(EPDGBakePackageReplaceModeOption Option);
+
+		// return the string for the actor bake option
+		static FString GetStringfromActorBakeOption(EHoudiniEngineActorBakeOption ActorBakeOption);
+
+
 		// Return HoudiniEngineBakeOption from FString
-		const EHoudiniEngineBakeOption StringToHoudiniEngineBakeOption(const FString & InString);
+		static EHoudiniEngineBakeOption StringToHoudiniEngineBakeOption(const FString & InString);
 
 		// Return EPDGBakeSelectionOption from FString
-		const EPDGBakeSelectionOption StringToPDGBakeSelectionOption(const FString& InString);
+		static EPDGBakeSelectionOption StringToPDGBakeSelectionOption(const FString& InString);
 
 		// Return EPDGBakePackageReplaceModeOption from FString
-		const EPDGBakePackageReplaceModeOption StringToPDGBakePackageReplaceModeOption(const FString & InString);
+		static EPDGBakePackageReplaceModeOption StringToPDGBakePackageReplaceModeOption(const FString & InString);
+
+		// Return EHoudiniEngineActorBakeOption from FString
+		static EHoudiniEngineActorBakeOption StringToHoudiniEngineActorBakeOption(const FString& InString);
 
 		// Convert EPDGBakePackageReplaceModeOption to EPackageReplaceMode
 		// TODO: perhaps EPackageReplaceMode can be moved to HoudiniEngineRuntime to avoid having both
 		// TODO: EPDGBakePackageReplaceModeOption and EPackageReplaceMode?
-		const EPackageReplaceMode PDGBakePackageReplaceModeToPackageReplaceMode(const EPDGBakePackageReplaceModeOption& InReplaceMode);
+		EPackageReplaceMode PDGBakePackageReplaceModeToPackageReplaceMode(const EPDGBakePackageReplaceModeOption& InReplaceMode);
 
 		// Get the reference of the radio button folder circle point arrays reference
 		TArray<FVector2D> & GetHoudiniParameterRadioButtonPointsOuter() { return HoudiniParameterRadioButtonPointsOuter; };
@@ -198,6 +214,11 @@ class HOUDINIENGINEEDITOR_API FHoudiniEngineEditor : public IHoudiniEngineEditor
 
 		//void ModulesChangedCallback(FName ModuleName, EModuleChangeReason ReasonForChange);
 		//FDelegateHandle ModulesChangedHandle;
+
+		// TODO: FHoudiniToolsEditor should be converted to an editor subsystem
+		FHoudiniToolsEditor& GetHoudiniTools() const { return *HoudiniToolsPtr; }
+
+		TSharedPtr<class SHoudiniNodeSyncPanel> GetNodeSyncPanel() { return NodeSyncPanel; }
 
 	protected:
 
@@ -320,6 +341,9 @@ class HOUDINIENGINEEDITOR_API FHoudiniEngineEditor : public IHoudiniEngineEditor
 		// Widget resources: PDG Bake package replace mode labels
 		TArray<TSharedPtr<FString>> HoudiniEnginePDGBakePackageReplaceModeOptionLabels;
 
+		// Bake Actor options labels
+		TArray<TSharedPtr<FString>> HoudiniEngineBakeActorOptionsLabels;
+
 		// List of UI commands used by the various menus
 		TSharedPtr<class FUICommandList> HEngineCommands;
 
@@ -389,6 +413,15 @@ class HOUDINIENGINEEDITOR_API FHoudiniEngineEditor : public IHoudiniEngineEditor
 		// Delegate handle for OnDeleteActorsEnd
 		FDelegateHandle OnDeleteActorsEnd;
 
+		// Delegate handle for LevelEditorModule::OnRegisterTabs
+		FDelegateHandle OnLevelEditorRegisterTabsHandle;
+
+		/*
+		* 
+		// Delegate handle for AssetTools::IsNameAllowed
+		FIsNameAllowed OnIsNameAllowed;
+		*/
+
 		// List of actors that HandleOnDeleteActorsBegin marked to _not_ be deleted. This
 		// is used to re-select these actors in HandleOnDeleteActorsEnd.
 		TArray<AActor*> ActorsToReselectOnDeleteActorsEnd;
@@ -400,4 +433,14 @@ class HOUDINIENGINEEDITOR_API FHoudiniEngineEditor : public IHoudiniEngineEditor
 
 		//NodeSync Tab
 		TSharedRef<class SDockTab> OnSpawnNodeSyncTab(const class FSpawnTabArgs& SpawnTabArgs);
+
+		//HoudiniTools Tab
+		TSharedRef<class SDockTab> OnSpawnHoudiniToolsTab(const class FSpawnTabArgs& SpawnTabArgs);
+
+		TSharedPtr<class SHoudiniNodeSyncPanel> NodeSyncPanel;
+
+		// Houdini Tools utility.
+		TSharedPtr<FHoudiniToolsEditor> HoudiniToolsPtr;
+
+
 };

@@ -31,6 +31,7 @@
 #include "HoudiniEngine.h"
 #include "HoudiniEngineUtils.h"
 #include "HoudiniEngineBakeUtils.h"
+#include "HoudiniEngineEditor.h"
 #include "HoudiniEngineEditorUtils.h"
 #include "HoudiniEngineRuntime.h"
 #include "HoudiniEngineRuntimeUtils.h"
@@ -57,10 +58,17 @@
 #include "Misc/FeedbackContext.h"
 #include "HAL/FileManager.h"
 #include "Modules/ModuleManager.h"
+#include "Interfaces/IPluginManager.h"
 #include "ISettingsModule.h"
 #include "UObject/ObjectSaveContext.h"
 //#include "UObject/ObjectSaveContext.h"
+#include "LevelEditor.h"
 #include "UObject/UObjectIterator.h"
+
+#include "Trace/StoreClient.h"
+
+#include "IContentBrowserSingleton.h"
+#include "ContentBrowserModule.h"
 
 #define LOCTEXT_NAMESPACE HOUDINI_LOCTEXT_NAMESPACE 
 
@@ -90,6 +98,7 @@ FHoudiniEngineCommands::RegisterCommands()
 
 	//NodeSync
 	UI_COMMAND(_OpenNodeSync, "Houdini Node Sync...", "Opens the Houdini Node Sync Panel.", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(_OpenHoudiniTools, "Houdini Tools...", "Opens the Houdini Tools Panel.", EUserInterfaceActionType::Button, FInputChord());
 
 	// PDG Import Commandlet
 	UI_COMMAND(_StartPDGCommandlet, "Start Async Importer", "Start the commandlet that imports PDG BGEO results in the background.", EUserInterfaceActionType::Button, FInputChord());
@@ -97,11 +106,15 @@ FHoudiniEngineCommands::RegisterCommands()
 	UI_COMMAND(_IsPDGCommandletEnabled, "Enable Async Importer", "Enables the commandlet that imports PDG BGEO results in the background.", EUserInterfaceActionType::Check, FInputChord());
 	
 	UI_COMMAND(_InstallInfo, "Installation Info...", "Display information on the current Houdini Engine installation", EUserInterfaceActionType::Button, FInputChord());
-	UI_COMMAND(_PluginSettings, "PluginSettings...", "Displays the Houdini Engine plugin settings", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(_PluginSettings, "Plugin Settings...", "Displays the Houdini Engine plugin project settings", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(_PluginEditorSettings, "Plugin Editor Preferences...", "Displays the Houdini Engine plugin editor preferences", EUserInterfaceActionType::Button, FInputChord());
 
 	UI_COMMAND(_OpenInHoudini, "Open scene in Houdini...", "Opens the current Houdini scene in Houdini.", EUserInterfaceActionType::Button, FInputChord(EKeys::O, EModifierKey::Control | EModifierKey::Alt));
 	UI_COMMAND(_SaveHIPFile, "Save Houdini scene (HIP)", "Saves a .hip file of the current Houdini scene.", EUserInterfaceActionType::Button, FInputChord());
-		
+	
+	UI_COMMAND(_ContentExampleGit, "Content Example...", "Opens the GitHub repository that contains the plugin's content examples.", EUserInterfaceActionType::Button, FInputChord());
+	UI_COMMAND(_ContentExampleBrowseTo, "Browse Content Examples...", "Browse to the installed content example folder in the current project (if installed).", EUserInterfaceActionType::Button, FInputChord());
+	
 	UI_COMMAND(_OnlineDoc, "Online Documentation...", "Go to the plugin's online documentation.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(_OnlineForum, "Online Forum...", "Go to the plugin's online forum.", EUserInterfaceActionType::Button, FInputChord());
 	UI_COMMAND(_ReportBug, "Report a bug...", "Report a bug for Houdini Engine for Unreal plugin.", EUserInterfaceActionType::Button, FInputChord());
@@ -135,7 +148,7 @@ FHoudiniEngineCommands::SaveHIPFile()
 	if (!DesktopPlatform || !FHoudiniEngineUtils::IsInitialized())
 		return;
 
-	TArray< FString > SaveFilenames;
+	TArray<FString> SaveFilenames;
 	bool bSaved = false;
 	void * ParentWindowWindowHandle = NULL;
 
@@ -144,16 +157,22 @@ FHoudiniEngineCommands::SaveHIPFile()
 	if (MainFrameParentWindow.IsValid() && MainFrameParentWindow->GetNativeWindow().IsValid())
 		ParentWindowWindowHandle = MainFrameParentWindow->GetNativeWindow()->GetOSWindowHandle();
 
+	FString FileType = TEXT("Houdini HIP file|*.hip");
+	if(FHoudiniEngine::Get().IsLicenseIndie())
+		FileType = TEXT("Houdini HIP file (Limited Commerical)|*.hiplc");
+	else if(FHoudiniEngine::Get().IsLicenseEducation())
+		FileType = TEXT("Houdini HIP file (Non Commercial)|*.hipnc");
+
 	bSaved = DesktopPlatform->SaveFileDialog(
 		ParentWindowWindowHandle,
 		NSLOCTEXT("SaveHIPFile", "SaveHIPFile", "Saves a .hip file of the current Houdini scene.").ToString(),
 		*(FEditorDirectories::Get().GetLastDirectory(ELastDirectory::GENERIC_EXPORT)),
 		TEXT(""),
-		TEXT("Houdini HIP file|*.hip"),
+		FileType,
 		EFileDialogFlags::None,
 		SaveFilenames);
 
-	if (bSaved && SaveFilenames.Num())
+	if(bSaved && SaveFilenames.Num())
 	{
 		// Add a slate notification
 		FString Notification = TEXT("Saving internal Houdini scene...");
@@ -179,11 +198,17 @@ FHoudiniEngineCommands::OpenInHoudini()
 		return;
 	}
 
+	FString FileExtension = TEXT(".hip");
+	if (FHoudiniEngine::Get().IsLicenseIndie())
+		FileExtension = TEXT(".hiplc");
+	else if (FHoudiniEngine::Get().IsLicenseEducation())
+		FileExtension = TEXT(".hipnc");
+
 	// First, saves the current scene as a hip file
 	// Creates a proper temporary file name
 	FString UserTempPath = FPaths::CreateTempFilename(
 		FPlatformProcess::UserTempDir(),
-		TEXT("HoudiniEngine"), TEXT(".hip"));
+		TEXT("HoudiniEngine"), *FileExtension);
 
 	// Save HIP file through Engine.
 	std::string TempPathConverted(TCHAR_TO_UTF8(*UserTempPath));
@@ -256,6 +281,52 @@ void
 FHoudiniEngineCommands::ShowPluginSettings()
 {
 	FModuleManager::LoadModuleChecked<ISettingsModule>("Settings").ShowViewer(FName("Project"), FName("Plugins"), FName("HoudiniEngine"));
+}
+
+void
+FHoudiniEngineCommands::ShowPluginEditorSettings()
+{
+	FModuleManager::LoadModuleChecked<ISettingsModule>("Settings").ShowViewer(FName("Editor"), FName("Plugins"), FName("HoudiniEngine"));
+}
+
+void
+FHoudiniEngineCommands::OpenContentExampleGit()
+{
+	FPlatformProcess::LaunchURL(HAPI_UNREAL_CONTENT_EXAMPLES_URL, nullptr, nullptr);
+}
+
+void
+FHoudiniEngineCommands::BrowseToContentExamples()
+{
+	TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("HoudiniEngineExamples"));
+	if (!Plugin.IsValid())// || !Plugin->IsEnabled())
+		return;
+
+	// Get the ContentExample's folder
+	//FString CEFolder = Plugin->GetContentDir() + "/ContentExamples/Maps";
+	FString CEFolder = "/HoudiniEngineExamples/ContentExamples/Maps";
+
+	TArray<FString> FolderList;
+	FolderList.Push(CEFolder);
+
+	FContentBrowserModule& ContentBrowserModule = FModuleManager::Get().LoadModuleChecked<FContentBrowserModule>("ContentBrowser");
+	ContentBrowserModule.Get().FocusPrimaryContentBrowser(false);
+	ContentBrowserModule.Get().ForceShowPluginContent(true);
+	//ContentBrowserModule.Get().SetSelectedPaths(FolderList, true);
+	ContentBrowserModule.Get().SyncBrowserToFolders(FolderList, true, true);
+}
+
+bool
+FHoudiniEngineCommands::HasContentExamples()
+{
+	TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("HoudiniEngineExamples"));
+	if (!Plugin.IsValid())
+		return false;
+	
+	if (!Plugin->IsEnabled())
+		return false;
+
+	return true;
 }
 
 void
@@ -350,7 +421,17 @@ FHoudiniEngineCommands::CleanUpTempFolder()
 					continue;
 
 				FReferencerInformationList ReferencesIncludingUndo;
-				bool bReferencedInMemoryOrUndoStack = IsReferenced(AssetInPackage, GARBAGE_COLLECTION_KEEPFLAGS, EInternalObjectFlags::GarbageCollectionKeepFlags, true, &ReferencesIncludingUndo);
+				bool bReferencedInMemoryOrUndoStack = IsReferenced(
+					AssetInPackage,
+					GARBAGE_COLLECTION_KEEPFLAGS,
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 4
+					EInternalObjectFlags_GarbageCollectionKeepFlags,
+#else
+					EInternalObjectFlags::GarbageCollectionKeepFlags,
+#endif
+					true,
+					&ReferencesIncludingUndo);
+
 				if (!bReferencedInMemoryOrUndoStack)
 					continue;
 
@@ -520,12 +601,14 @@ FHoudiniEngineCommands::BakeAllAssets()
 		{
 			// if (FHoudiniEngineBakeUtils::ReplaceWithBlueprint(HoudiniAssetComponent) != nullptr)
 			// 	bSuccess = true;
-			FHoudiniEngineOutputStats BakeStats;
-			TArray<UPackage*> PackagesToSave;
-			TArray<UBlueprint*> Blueprints;
-			const bool bInReplaceAssets = true;
-			bSuccess = FHoudiniEngineBakeUtils::BakeBlueprints(HoudiniAssetComponent, bInReplaceAssets, HoudiniAssetComponent->bRecenterBakedActors, BakeStats, Blueprints, PackagesToSave);
-			FHoudiniEngineBakeUtils::SaveBakedPackages(PackagesToSave);
+			FHoudiniBakedObjectData BakeOutputs;
+			FHoudiniBakeSettings BakeOptions;
+			BakeOptions.bReplaceActors = true;
+			BakeOptions.bReplaceAssets = true;
+			BakeOptions.bRecenterBakedActors = HoudiniAssetComponent->bRecenterBakedActors;
+
+			bSuccess = FHoudiniEngineBakeUtils::BakeBlueprints(HoudiniAssetComponent, BakeOptions, BakeOutputs);
+			FHoudiniEngineBakeUtils::SaveBakedPackages(BakeOutputs.PackagesToSave);
 			
 			if (bSuccess)
 			{
@@ -540,7 +623,7 @@ FHoudiniEngineCommands::BakeAllAssets()
 						FActorSpawnParameters SpawnParams;
 						SpawnParams.OverrideLevel = Level;
 						FTransform Transform = HoudiniAssetComponent->GetComponentTransform();
-						for (UBlueprint* Blueprint : Blueprints)
+						for (UBlueprint* Blueprint : BakeOutputs.Blueprints)
 						{
 							if (!IsValid(Blueprint))
 								continue;
@@ -558,9 +641,11 @@ FHoudiniEngineCommands::BakeAllAssets()
 			// TODO: this used to have a way to not select in v1
 			// if (FHoudiniEngineBakeUtils::ReplaceHoudiniActorWithActors(HoudiniAssetComponent))
 			// 	bSuccess = true;
-			const bool bReplaceActors = true;
-			const bool bReplaceAssets = true;
-			if (FHoudiniEngineBakeUtils::BakeHoudiniActorToActors(HoudiniAssetComponent, bReplaceActors, bReplaceAssets, HoudiniAssetComponent->bRecenterBakedActors))
+			FHoudiniBakeSettings BakeOptions;
+			BakeOptions.bReplaceActors = true;
+			BakeOptions.bReplaceAssets = true;
+			BakeOptions.bRecenterBakedActors = HoudiniAssetComponent->bRecenterBakedActors;
+			if (FHoudiniEngineBakeUtils::BakeHDAToActors(HoudiniAssetComponent, BakeOptions))
 			{
 				bSuccess = true;
 				FHoudiniEngineBakeUtils::DeleteBakedHoudiniAssetActor(HoudiniAssetComponent);
@@ -806,12 +891,17 @@ FHoudiniEngineCommands::BakeSelection()
 			// 	BakedCount++;
 			// if (FHoudiniEngineBakeUtils::ReplaceWithBlueprint(HoudiniAssetComponent) != nullptr)
 			// 	bSuccess = true;
-			FHoudiniEngineOutputStats BakeStats;
-			TArray<UPackage*> PackagesToSave;
-			TArray<UBlueprint*> Blueprints;
+			FHoudiniBakedObjectData BakeOutputs;
+
 			const bool bReplaceAssets = true;
-			const bool bSuccess = FHoudiniEngineBakeUtils::BakeBlueprints(HoudiniAssetComponent, bReplaceAssets, HoudiniAssetComponent->bRecenterBakedActors, BakeStats, Blueprints, PackagesToSave);
-			FHoudiniEngineBakeUtils::SaveBakedPackages(PackagesToSave);
+
+			FHoudiniBakeSettings BakeOptions;
+			BakeOptions.bReplaceActors = true;
+			BakeOptions.bReplaceAssets = true;
+			BakeOptions.bRecenterBakedActors = HoudiniAssetComponent->bRecenterBakedActors;
+
+			const bool bSuccess = FHoudiniEngineBakeUtils::BakeBlueprints(HoudiniAssetComponent, BakeOptions, BakeOutputs);
+			FHoudiniEngineBakeUtils::SaveBakedPackages(BakeOutputs.PackagesToSave);
 			
 			if (bSuccess)
 			{
@@ -825,7 +915,7 @@ FHoudiniEngineCommands::BakeSelection()
 						FActorSpawnParameters SpawnParams;
 						SpawnParams.OverrideLevel = Level;
 						FTransform Transform = HoudiniAssetComponent->GetComponentTransform();
-						for (UBlueprint* Blueprint : Blueprints)
+						for (UBlueprint* Blueprint : BakeOutputs.Blueprints)
 						{
 							if (!IsValid(Blueprint))
 								continue;
@@ -957,7 +1047,7 @@ void FHoudiniEngineCommands::RecentreSelection()
 }
 
 void
-FHoudiniEngineCommands::OpenSessionSync()
+FHoudiniEngineCommands::OpenSessionSync(bool bWaitForCompletion)
 {
 	//if (!FHoudiniEngine::IsInitialized())
 	//	return;
@@ -975,7 +1065,9 @@ FHoudiniEngineCommands::OpenSessionSync()
 	EHoudiniRuntimeSettingsSessionType SessionType = HoudiniRuntimeSettings->SessionType;
 	FString ServerPipeName = HoudiniRuntimeSettings->ServerPipeName;
 	int32 ServerPort = HoudiniRuntimeSettings->ServerPort;
-	
+	int64 BufferSize = HoudiniRuntimeSettings->SharedMemoryBufferSize;
+	bool BufferCyclic = HoudiniRuntimeSettings->bSharedMemoryBufferCyclic;
+
 	FString SessionSyncArgs = TEXT("-hess=");
 	if (SessionType == EHoudiniRuntimeSettingsSessionType::HRSST_NamedPipe)
 	{
@@ -986,6 +1078,15 @@ FHoudiniEngineCommands::OpenSessionSync()
 	{
 		// Add the -hess=port:9090 argument
 		SessionSyncArgs += TEXT("port:") + FString::FromInt(ServerPort);
+	}
+	else if (SessionType == EHoudiniRuntimeSettingsSessionType::HRSST_MemoryBuffer)
+	{
+		// -hess=shared:TYPE:SIZE:NAME
+		// TYPE specifies the shared memory buffer type. (ring, fixed).
+		// SIZE specifies the size of the shared memory buffer in megabytes (MB).
+		// NAME specifies the name of the shared memory. Different sessions must have a unique name.
+		FString BufferType = BufferCyclic ? TEXT("ring") : TEXT("fixed");
+		SessionSyncArgs += TEXT("shared:") + BufferType + TEXT(":") + FString::FromInt(BufferSize) + TEXT(":") + ServerPipeName;
 	}
 	else
 	{
@@ -1063,73 +1164,92 @@ FHoudiniEngineCommands::OpenSessionSync()
 		FHoudiniEngine::Get().SetHESSProcHandle(HESSHandle);
 	}
 
-	// Start an Async task to connect to Session Sync	
-	Async(EAsyncExecution::TaskGraphMainThread, [SessionType, ServerPipeName, ServerPort]()
+	if (!bWaitForCompletion)
 	{
-		// Use a timeout to avoid waiting indefinitely for H to start in session sync mode
-		const double Timeout = 180.0; // 3min
-		const double StartTimestamp = FPlatformTime::Seconds();
-
-		FString ServerHost = TEXT("localhost");
-		while (!FHoudiniEngine::Get().SessionSyncConnect(SessionType, ServerPipeName, ServerHost, ServerPort))
+		Async(EAsyncExecution::TaskGraphMainThread, [SessionType, ServerPipeName, ServerPort, BufferSize, BufferCyclic]()
 		{
-			// Houdini might not be done loading, sleep for one second 
-			FPlatformProcess::Sleep(1);
+			StartAndConnectToSessionSync(SessionType, ServerPipeName, ServerPort, BufferSize, BufferCyclic);
+		});
+	}
+	else
+	{
+		StartAndConnectToSessionSync(SessionType, ServerPipeName, ServerPort, BufferSize, BufferCyclic);
+	}
+}
 
-            // Check for license error
-            int32 HESSReturnCode;
-            FProcHandle HESSHandle = FHoudiniEngine::Get().GetHESSProcHandle();
-            if (FPlatformProcess::GetProcReturnCode(HESSHandle, &HESSReturnCode))
-            {
-                FString Notification = TEXT("Failed to start SessionSync...");
-                FHoudiniEngineUtils::CreateSlateNotification(Notification);
+bool
+FHoudiniEngineCommands::StartAndConnectToSessionSync(
+	const EHoudiniRuntimeSettingsSessionType SessionType, 
+	const FString& ServerPipeName, 
+	const int32 ServerPort,
+	const int64 BufferSize,
+	const bool BufferCyclic)
+{
+	// Use a timeout to avoid waiting indefinitely for H to start in session sync mode
+	const double Timeout = 180.0; // 3min
+	const double StartTimestamp = FPlatformTime::Seconds();
 
-                switch (HESSReturnCode)
-                {
-                    case 3:
-                        HOUDINI_LOG_ERROR(TEXT("Failed to start SessionSync - No licenses were available"));
-                        FHoudiniEngine::Get().SetSessionStatus(EHoudiniSessionStatus::NoLicense);
-                        return false;
-                        break;
-                    default:
-                        HOUDINI_LOG_ERROR(TEXT("Failed to start SessionSync - Unknown error"));
-                        FHoudiniEngine::Get().SetSessionStatus(EHoudiniSessionStatus::Failed);
-                        return false;
-                        break;
-                }
-            }
+	const FString ServerHost = TEXT("localhost");
+	constexpr int32 NumSessions = 1;
+	while (!FHoudiniEngine::Get().SessionSyncConnect(
+		SessionType, NumSessions, ServerPipeName, ServerHost, ServerPort, BufferSize, BufferCyclic))
+	{
+		// Houdini might not be done loading, sleep for one second 
+		FPlatformProcess::Sleep(.5f);
 
-			// Check for the timeout
-			if (FPlatformTime::Seconds() - StartTimestamp > Timeout)
+		// Check for license error
+		int32 HESSReturnCode;
+		FProcHandle HESSHandle = FHoudiniEngine::Get().GetHESSProcHandle();
+		if (FPlatformProcess::GetProcReturnCode(HESSHandle, &HESSReturnCode))
+		{
+			FString Notification = TEXT("Failed to start SessionSync...");
+			FHoudiniEngineUtils::CreateSlateNotification(Notification);
+
+			switch (HESSReturnCode)
 			{
-				// ... and a log message
-				HOUDINI_LOG_ERROR(TEXT("Failed to start SessionSync - Timeout..."));
+			case 3:
+				HOUDINI_LOG_ERROR(TEXT("Failed to start SessionSync - No licenses were available"));
+				FHoudiniEngine::Get().SetSessionStatus(EHoudiniSessionStatus::NoLicense);
 				return false;
+				break;
+			default:
+				HOUDINI_LOG_ERROR(TEXT("Failed to start SessionSync - Unknown error"));
+				FHoudiniEngine::Get().SetSessionStatus(EHoudiniSessionStatus::Failed);
+				return false;
+				break;
 			}
 		}
 
-		// Initialize HAPI with this session
-		if (!FHoudiniEngine::Get().InitializeHAPISession())
+		// Check for the timeout
+		if (FPlatformTime::Seconds() - StartTimestamp > Timeout)
 		{
-			FHoudiniEngine::Get().StopTicking();
+			// ... and a log message
+			HOUDINI_LOG_ERROR(TEXT("Failed to start SessionSync - Timeout..."));
 			return false;
 		}
-		
-		// Notify all HACs that they need to instantiate in the new session
-		FHoudiniEngineUtils::MarkAllHACsAsNeedInstantiation();
-		
-		// Start ticking
-		FHoudiniEngine::Get().StartTicking();
+	}
 
-		// Add a slate notification
-		FString Notification = TEXT("Succesfully connected to Session Sync...");
-		FHoudiniEngineUtils::CreateSlateNotification(Notification);
+	// Initialize HAPI with this session
+	if (!FHoudiniEngine::Get().InitializeHAPISession())
+	{
+		FHoudiniEngine::Get().StopTicking();
+		return false;
+	}
 
-		// ... and a log message
-		HOUDINI_LOG_MESSAGE(TEXT("Succesfully connected to Session Sync..."));
-		
-		return true;
-	});
+	// Notify all HACs that they need to instantiate in the new session
+	FHoudiniEngineUtils::MarkAllHACsAsNeedInstantiation();
+
+	// Start ticking
+	FHoudiniEngine::Get().StartTicking();
+
+	// Add a slate notification
+	FString Notification = TEXT("Succesfully connected to Session Sync...");
+	FHoudiniEngineUtils::CreateSlateNotification(Notification);
+
+	// ... and a log message
+	HOUDINI_LOG_MESSAGE(TEXT("Succesfully connected to Session Sync..."));
+
+	return true;
 }
 
 void
@@ -1160,28 +1280,16 @@ FHoudiniEngineCommands::CloseSessionSync()
 void
 FHoudiniEngineCommands::OpenNodeSync()
 {
-	//if (!FHoudiniEngine::Get().StopSession())
-	//{
-	//	// StopSession returns false only if Houdini is not initialized
-	//	HOUDINI_LOG_ERROR(TEXT("Failed to stop Session Sync - HAPI Not initialized"));
-	//	return;
-	//}
+	//FGlobalTabmanager::Get()->TryInvokeTab(NodeSyncTabName);
+	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>(TEXT("LevelEditor"));
+	LevelEditorModule.GetLevelEditorTabManager()->TryInvokeTab(NodeSyncTabName);
+}
 
-	//// Add a slate notification
-	//FString Notification = TEXT("Stopping Houdini Session Sync...");
-	//FHoudiniEngineUtils::CreateSlateNotification(Notification);
-
-	//// ... and a log message
-	//HOUDINI_LOG_MESSAGE(TEXT("Stopping Houdini Session Sync."));
-
-	//// Stop Houdini Session sync if it is still running!
-	//FProcHandle PreviousHESS = FHoudiniEngine::Get().GetHESSProcHandle();
-	//if (FPlatformProcess::IsProcRunning(PreviousHESS))
-	//{
-	//	FPlatformProcess::TerminateProc(PreviousHESS, true);
-	//}
-	FGlobalTabmanager::Get()->TryInvokeTab(NodeSyncTabName);
-	return;
+void FHoudiniEngineCommands::OpenHoudiniToolsTab()
+{
+	// FGlobalTabmanager::Get()->TryInvokeTab(HoudiniToolsTabName);
+	FLevelEditorModule& LevelEditorModule = FModuleManager::GetModuleChecked<FLevelEditorModule>( TEXT("LevelEditor") );
+	LevelEditorModule.GetLevelEditorTabManager()->TryInvokeTab(HoudiniToolsTabName);
 }
 
 
@@ -1878,6 +1986,9 @@ FHoudiniEngineCommands::RefineHoudiniProxyMeshesToStaticMeshesNotifyDone(const u
 		if (OnHoudiniProxyMeshesRefinedDelegate.IsBound())
 			OnHoudiniProxyMeshesRefinedDelegate.Broadcast(HAC, EHoudiniProxyRefineResult::Skipped);
 	}
+
+	// Update details to display the new inputs
+	FHoudiniEngineUtils::UpdateEditorProperties(true);
 }
 
 void
@@ -1936,6 +2047,217 @@ FHoudiniEngineCommands::SetAllowPlayInEditorRefinement(
 		Component->SetAllowPlayInEditorRefinement(false);
 	}
 #endif
+}
+
+void
+FHoudiniEngineCommands::DumpGenericAttribute(const TArray<FString>& Args)
+{
+	if (Args.Num() < 1)
+	{
+		HOUDINI_LOG_ERROR(TEXT(" "));
+		HOUDINI_LOG_ERROR(TEXT("DumpGenericAttribute takes a class name as argument! ie: DumpGenericAttribute StaticMesh"));
+		HOUDINI_LOG_ERROR(TEXT(" "));
+		return;
+	}
+
+	for (int32 Idx = 0; Idx < Args.Num(); Idx++)
+	{
+		// Get the class name
+		FString ClassName = Args[Idx];
+
+		HOUDINI_LOG_MESSAGE(TEXT("------------------------------------------------------------------------------------------------------------"));
+		HOUDINI_LOG_MESSAGE(TEXT("        Dumping GenericAttribute for Class %s"), *ClassName);
+		HOUDINI_LOG_MESSAGE(TEXT("------------------------------------------------------------------------------------------------------------"));
+
+		HOUDINI_LOG_MESSAGE(TEXT(" "));
+		HOUDINI_LOG_MESSAGE(TEXT("Format: "));
+		HOUDINI_LOG_MESSAGE(TEXT("unreal_uproperty_XXXX : NAME (DISPLAY_NAME) - UE TYPE: UETYPE - H TYPE: HTYPE TUPLE."));
+		HOUDINI_LOG_MESSAGE(TEXT(" "));
+		HOUDINI_LOG_MESSAGE(TEXT(" "));
+
+		// Make sure we can find the class
+		UClass* FoundClass = FHoudiniEngineRuntimeUtils::GetClassByName(ClassName);
+		if (!IsValid(FoundClass) && (ClassName.StartsWith("U") || ClassName.StartsWith("F")))
+		{
+			// Try again after removing the starting U/F character
+			FString ChoppedName = ClassName.RightChop(1);
+			FoundClass = FHoudiniEngineRuntimeUtils::GetClassByName(ChoppedName);
+		}
+
+		if (!IsValid(FoundClass))
+		{
+			HOUDINI_LOG_ERROR(TEXT("DumpGenericAttribute wasn't able to find a UClass that matches %s!"), *ClassName);
+			HOUDINI_LOG_MESSAGE(TEXT("------------------------------------------------------------------------------------------------------------"));
+			return;
+		}
+
+		UObject* ObjectToParse = FoundClass->GetDefaultObject();
+		if (!IsValid(ObjectToParse))
+		{
+			// Use the class directly if we failed to get a DCO
+			ObjectToParse = FoundClass;
+		}
+
+		// Reuse the find property function used by the generic attribute system
+		FProperty* FoundProperty = nullptr;
+		UObject* FoundPropertyObject = nullptr;
+		void* Container = nullptr;
+		FEditPropertyChain FoundPropertyChain;
+		bool bExactPropertyFound = false;
+		FHoudiniGenericAttribute::FindPropertyOnObject(ObjectToParse, FString(), FoundPropertyChain, FoundProperty, FoundPropertyObject, Container, bExactPropertyFound, true);
+
+		HOUDINI_LOG_MESSAGE(TEXT("------------------------------------------------------------------------------------------------------------"));
+		HOUDINI_LOG_MESSAGE(TEXT(" "));
+	}
+}
+
+
+void
+FHoudiniEngineCommands::CleanHoudiniEngineSession()
+{
+	// HAPI needs to be initialized
+	if (!FHoudiniApi::IsHAPIInitialized())
+	{
+		HOUDINI_LOG_ERROR(TEXT("Unable to clean the current Houdini Engine Session - HAPI is not initialized."));
+		return;
+	}
+
+	// We need a current session
+	const HAPI_Session* CurrentSession = FHoudiniEngine::Get().GetSession();
+	if (!CurrentSession)
+	{
+		HOUDINI_LOG_ERROR(TEXT("Unable to clean the current Houdini Engine Session - no current session."));
+		return;
+	}
+
+	// We need the current session to be valid
+	if (HAPI_RESULT_SUCCESS != FHoudiniApi::IsSessionValid(CurrentSession))
+	{
+		HOUDINI_LOG_ERROR(TEXT("Unable to clean the current Houdini Engine Session - the current session is invalid."));
+		return;
+	}
+
+	HAPI_Result Result;
+	HOUDINI_CHECK_ERROR_GET(&Result, FHoudiniApi::Cleanup(CurrentSession));
+	if (HAPI_RESULT_SUCCESS != Result)
+	{
+		HOUDINI_LOG_ERROR(TEXT("Failed to clean up the current Houdini Engine Session."));
+	}
+	else
+	{
+		HOUDINI_LOG_MESSAGE(TEXT("Succesfully cleaned up the current Houdini Engine Session."));
+
+		// We need to reinitialize the session after the clean up
+		FHoudiniEngine::Get().InitializeHAPISession();
+	}
+}
+
+
+void
+FHoudiniEngineCommands::StartPerformanceMonitoring()
+{
+	// HAPI needs to be initialized
+	if (!FHoudiniApi::IsHAPIInitialized())
+	{
+		HOUDINI_LOG_ERROR(TEXT("Unable to start HAPI performance monitoring - HAPI is not initialized."));
+		return;
+	}
+
+	// We need a current session
+	const HAPI_Session* CurrentSession = FHoudiniEngine::Get().GetSession();
+	if (!CurrentSession)
+	{
+		HOUDINI_LOG_ERROR(TEXT("Unable to start HAPI performance monitoring - no current session."));
+		return;
+	}
+
+	// We need the current session to be valid
+	if (HAPI_RESULT_SUCCESS != FHoudiniApi::IsSessionValid(CurrentSession))
+	{
+		HOUDINI_LOG_ERROR(TEXT("Unable to start HAPI performance monitoring - the current session is invalid."));
+		return;
+	}
+
+	FHoudiniEngine::Get().StartHAPIPerformanceMonitoring();
+}
+
+void
+FHoudiniEngineCommands::StopPerformanceMonitoring()
+{
+	// HAPI needs to be initialized
+	if (!FHoudiniApi::IsHAPIInitialized())
+	{
+		HOUDINI_LOG_ERROR(TEXT("Unable to start HAPI performance monitoring - HAPI is not initialized."));
+		return;
+	}
+
+	// We need a current session
+	const HAPI_Session* CurrentSession = FHoudiniEngine::Get().GetSession();
+	if (!CurrentSession)
+	{
+		HOUDINI_LOG_ERROR(TEXT("Unable to start HAPI performance monitoring - no current session."));
+		return;
+	}
+
+	// We need the current session to be valid
+	if (HAPI_RESULT_SUCCESS != FHoudiniApi::IsSessionValid(CurrentSession))
+	{
+		HOUDINI_LOG_ERROR(TEXT("Unable to start HAPI performance monitoring - the current session is invalid."));
+		return;
+	}
+
+	FString TraceStorePath;
+	if (TraceStorePath.IsEmpty())
+	{
+		using UE::Trace::FStoreClient;
+		FStoreClient* StoreClientPtr = FStoreClient::Connect(TEXT("localhost"));
+		TUniquePtr<FStoreClient> StoreClient = TUniquePtr<FStoreClient>(StoreClientPtr);
+
+		if (StoreClient)
+		{
+			const FStoreClient::FStatus* Status = StoreClient->GetStatus();
+			if (Status)
+			{
+				TraceStorePath = FString(Status->GetStoreDir());
+			}
+		}
+	}
+
+	FHoudiniEngine::Get().StopHAPIPerformanceMonitoring(TraceStorePath);
+}
+
+void
+FHoudiniEngineCommands::DumpNode(const TArray<FString>& Args)
+{
+	// HAPI needs to be initialized
+	if(!FHoudiniApi::IsHAPIInitialized())
+	{
+		HOUDINI_LOG_ERROR(TEXT("HAPI is not initialized."));
+		return;
+	}
+
+	// We need a current session
+	const HAPI_Session* CurrentSession = FHoudiniEngine::Get().GetSession();
+	if(!CurrentSession)
+	{
+		HOUDINI_LOG_ERROR(TEXT("No current session."));
+		return;
+	}
+
+	// We need the current session to be valid
+	if(HAPI_RESULT_SUCCESS != FHoudiniApi::IsSessionValid(CurrentSession))
+	{
+		HOUDINI_LOG_ERROR(TEXT("The current session is invalid."));
+		return;
+	}
+
+    if(Args.Num() < 1)
+    {
+        HOUDINI_LOG_ERROR(TEXT("DumpNode takes a node id as argument! ie: DumpNode /obj/node"));
+        return;
+    }
+
+	FHoudiniEngineUtils::DumpNode(Args[0]);
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -63,6 +63,7 @@ FHoudiniPDGManager::~FHoudiniPDGManager()
 bool
 FHoudiniPDGManager::InitializePDGAssetLink(UHoudiniAssetComponent* InHAC)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniPDGManager::InitializePDGAssetLink);
 	if (!IsValid(InHAC))
 		return false;
 
@@ -213,6 +214,8 @@ FHoudiniPDGManager::UpdatePDGAssetLink(UHoudiniPDGAssetLink* PDGAssetLink)
 bool
 FHoudiniPDGManager::PopulateTOPNetworks(UHoudiniPDGAssetLink* PDGAssetLink, bool bInZeroWorkItemTallys)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniPDGManager::PopulateTOPNetworks);
+
 	// Find all TOP networks from linked HDA, as well as the TOP nodes within, and populate internal state.
 	if (!IsValid(PDGAssetLink))
 		return false;
@@ -222,7 +225,7 @@ FHoudiniPDGManager::PopulateTOPNetworks(UHoudiniPDGAssetLink* PDGAssetLink, bool
 	int32 NetworkNodeCount = 0;
 	HOUDINI_CHECK_ERROR_RETURN( FHoudiniApi::ComposeChildNodeList(
 		FHoudiniEngine::Get().GetSession(), (HAPI_NodeId)PDGAssetLink->AssetID,
-		HAPI_NODETYPE_ANY, HAPI_NODEFLAGS_NETWORK, true, &NetworkNodeCount), false);
+		HAPI_NODETYPE_SOP | HAPI_NODETYPE_TOP, HAPI_NODEFLAGS_NETWORK | HAPI_NODEFLAGS_NON_BYPASS, true, &NetworkNodeCount), false);
 
 	if (NetworkNodeCount <= 0)
 		return false;
@@ -232,33 +235,6 @@ FHoudiniPDGManager::PopulateTOPNetworks(UHoudiniPDGAssetLink* PDGAssetLink, bool
 	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetComposedChildNodeList(
 		FHoudiniEngine::Get().GetSession(), (HAPI_NodeId)PDGAssetLink->AssetID,
 		AllNetworkNodeIDs.GetData(), NetworkNodeCount), false);
-
-	// There is currently no way to only get non bypassed nodes via HAPI
-	// So we now need to get a list of all the bypassed top nets, in order to remove them from the previous list...
-	TArray<HAPI_NodeId> AllBypassedTOPNetNodeIDs;
-	{
-		int32 BypassedTOPNetNodeCount = 0;
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::ComposeChildNodeList(
-			FHoudiniEngine::Get().GetSession(), (HAPI_NodeId)PDGAssetLink->AssetID,
-			HAPI_NODETYPE_ANY, HAPI_NODEFLAGS_NETWORK | HAPI_NODEFLAGS_BYPASS, true, &BypassedTOPNetNodeCount), false);
-
-		if (BypassedTOPNetNodeCount > 0)
-		{
-			// Get the list of all bypassed TOP Net...
-			AllBypassedTOPNetNodeIDs.SetNum(BypassedTOPNetNodeCount);
-			HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetComposedChildNodeList(
-				FHoudiniEngine::Get().GetSession(), (HAPI_NodeId)PDGAssetLink->AssetID,
-				AllBypassedTOPNetNodeIDs.GetData(), BypassedTOPNetNodeCount), false);
-
-			// ... and remove them from the network list
-			for (int32 Idx = AllNetworkNodeIDs.Num() - 1; Idx >= 0; Idx--)
-			{
-				if (AllBypassedTOPNetNodeIDs.Contains(AllNetworkNodeIDs[Idx]))
-					AllNetworkNodeIDs.RemoveAt(Idx);
-			}
-		}
-	}
-	
 
 	// For each Network we found earlier, only add those with TOP child nodes 
 	// Therefore guaranteeing that we only add TOP networks
@@ -278,26 +254,14 @@ FHoudiniPDGManager::PopulateTOPNetworks(UHoudiniPDGAssetLink* PDGAssetLink, bool
 			continue;
 		}
 		
-		// Skip non TOP or SOP networks
-		if (CurrentNodeInfo.type != HAPI_NodeType::HAPI_NODETYPE_TOP
-			&& CurrentNodeInfo.type != HAPI_NodeType::HAPI_NODETYPE_SOP)
-		{
-			continue;
-		}
 
 		// Check that this TOP Net is not nested in another TOP Net...
-		// This will happen with ROP Geometry TOPs for example...
+		// This can happen with ROP Geometry TOPs for example...
 		bool bIsNestedInTOPNet = false;
 		HAPI_NodeId CurrentParentId = CurrentNodeInfo.parentId;
 		while (CurrentParentId > 0)
 		{
 			if (AllNetworkNodeIDs.Contains(CurrentParentId))
-			{
-				bIsNestedInTOPNet = true;
-				break;
-			}
-
-			if(AllBypassedTOPNetNodeIDs.Contains(CurrentParentId))
 			{
 				bIsNestedInTOPNet = true;
 				break;
@@ -319,11 +283,11 @@ FHoudiniPDGManager::PopulateTOPNetworks(UHoudiniPDGAssetLink* PDGAssetLink, bool
 		if (bIsNestedInTOPNet)
 			continue;
 
-		// Get the list of all TOP nodes within the current network (ignoring schedulers)		
+		// Get the list of all non bypassed TOP nodes within the current network (ignoring schedulers)
 		int32 TOPNodeCount = 0;
 		if (HAPI_RESULT_SUCCESS != FHoudiniApi::ComposeChildNodeList(
 			FHoudiniEngine::Get().GetSession(), CurrentNodeId,
-			HAPI_NodeType::HAPI_NODETYPE_TOP, HAPI_NODEFLAGS_TOP_NONSCHEDULER, true, &TOPNodeCount))
+			HAPI_NodeType::HAPI_NODETYPE_TOP, HAPI_NODEFLAGS_TOP_NONSCHEDULER | HAPI_NODEFLAGS_NON_BYPASS, true, &TOPNodeCount))
 		{
 			continue;
 		}
@@ -337,32 +301,6 @@ FHoudiniPDGManager::PopulateTOPNetworks(UHoudiniPDGAssetLink* PDGAssetLink, bool
 		if (AllTOPNodeIDs.Num() <= 0)
 		{
 			continue;
-		}
-
-		// Since there is currently no way to get only non-bypassed nodes via HAPI
-		// we need to get a list of all the bypassed top nodes to remove them from the previous list
-		{
-			int32 BypassedTOPNodeCount = 0;
-			HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::ComposeChildNodeList(
-				FHoudiniEngine::Get().GetSession(), CurrentNodeId,
-				HAPI_NODETYPE_ANY, HAPI_NODEFLAGS_TOP_NONSCHEDULER | HAPI_NODEFLAGS_BYPASS, true, &BypassedTOPNodeCount), false);
-
-			if (BypassedTOPNodeCount > 0)
-			{
-				// Get the list of all bypassed TOP Nodes...
-				TArray<HAPI_NodeId> AllBypassedTOPNodes;
-				AllBypassedTOPNodes.SetNum(BypassedTOPNodeCount);
-				HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetComposedChildNodeList(
-					FHoudiniEngine::Get().GetSession(), CurrentNodeId,
-					AllBypassedTOPNodes.GetData(), BypassedTOPNodeCount), false);
-
-				// ... and remove them from the top node  list
-				for (int32 Idx = AllTOPNodeIDs.Num() - 1; Idx >= 0; Idx--)
-				{
-					if (AllBypassedTOPNodes.Contains(AllTOPNodeIDs[Idx]))
-						AllTOPNodeIDs.RemoveAt(Idx);
-				}
-			}
 		}
 
 		// TODO:
@@ -449,6 +387,7 @@ bool
 FHoudiniPDGManager::PopulateTOPNodes(
 	const TArray<HAPI_NodeId>& InTopNodeIDs, UTOPNetwork* InTOPNetwork, UHoudiniPDGAssetLink* InPDGAssetLink, bool bInZeroWorkItemTallys)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniPDGManager::PopulateTOPNodes);
 	if (!IsValid(InPDGAssetLink))
 		return false;
 
@@ -578,26 +517,29 @@ FHoudiniPDGManager::DirtyTOPNode(UTOPNode* InTOPNode)
 // 	}
 // }
 
-void
+bool
 FHoudiniPDGManager::CookTOPNode(UTOPNode* InTOPNode)
 {
 	if (!IsValid(InTOPNode))
-		return;
+		return false;
 		
 	if (!FHoudiniEngine::Get().GetSession())
-		return;
+		return false;
 
 	if (InTOPNode->NodeState == EPDGNodeState::Cooking || InTOPNode->AnyWorkItemsPending())
 	{
 		HOUDINI_LOG_WARNING(TEXT("PDG Cook TOP Node - %s is already/still cooking, ignoring 'Cook TOP Node' request."), *(InTOPNode->NodePath));
-		return;
+		return false;
 	}
 
 	if (HAPI_RESULT_SUCCESS != FHoudiniApi::CookPDG(
 		FHoudiniEngine::Get().GetSession(), InTOPNode->NodeId, 0, 0))
 	{
 		HOUDINI_LOG_ERROR(TEXT("PDG Cook TOP Node - Failed to cook %s!"), *(InTOPNode->NodeName));
+		return false;
 	}
+
+	return true;
 }
 
 
@@ -620,7 +562,7 @@ FHoudiniPDGManager::DirtyAll(UTOPNetwork* InTOPNet)
 }
 
 
-void
+bool
 FHoudiniPDGManager::CookOutput(UTOPNetwork* InTOPNet)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniPDGManager::CookOutput);
@@ -630,10 +572,10 @@ FHoudiniPDGManager::CookOutput(UTOPNetwork* InTOPNet)
 	//UHoudiniPDGAssetLink::ResetTOPNetworkWorkItemTally(InTOPNet);
 
 	if (!IsValid(InTOPNet))
-		return;
+		return false;
 	
 	if (!FHoudiniEngine::Get().GetSession())
-		return;
+		return false;
 
 	bool bAlreadyCooking = InTOPNet->AnyWorkItemsPending();
 
@@ -644,7 +586,7 @@ FHoudiniPDGManager::CookOutput(UTOPNetwork* InTOPNet)
             FHoudiniEngine::Get().GetSession(), InTOPNet->NodeId, &GraphContextId))
 		{
 			HOUDINI_LOG_ERROR(TEXT("PDG Cook Output - Failed to get %s's graph context ID!"), *(InTOPNet->NodeName));
-			return;
+			return false;
 		}
 
 		int32 PDGState = -1;
@@ -652,7 +594,7 @@ FHoudiniPDGManager::CookOutput(UTOPNetwork* InTOPNet)
             FHoudiniEngine::Get().GetSession(), GraphContextId, &PDGState))
 		{
 			HOUDINI_LOG_ERROR(TEXT("PDG Cook Output - Failed to get %s's PDG state."), *(InTOPNet->NodeName));
-			return;
+			return false;
 		}
 		bAlreadyCooking = ((HAPI_PDG_State) PDGState == HAPI_PDG_STATE_COOKING);
 	}
@@ -660,7 +602,7 @@ FHoudiniPDGManager::CookOutput(UTOPNetwork* InTOPNet)
 	if (bAlreadyCooking)
 	{
 		HOUDINI_LOG_WARNING(TEXT("PDG Cook Output - %s is already/still cooking, ignoring 'Cook Output' request."), *(InTOPNet->NodeName));
-		return;
+		return false;
 	}
 
 	// TODO: ???
@@ -669,7 +611,10 @@ FHoudiniPDGManager::CookOutput(UTOPNetwork* InTOPNet)
 		FHoudiniEngine::Get().GetSession(), InTOPNet->NodeId, 0, 0))
 	{
 		HOUDINI_LOG_ERROR(TEXT("PDG Cook Output - Failed to cook %s's output!"), *(InTOPNet->NodeName));
+		return false;
 	}
+
+	return true;
 }
 
 
@@ -804,11 +749,13 @@ FHoudiniPDGManager::UpdatePDGContexts()
 
 			int32 PDGEventCount = 0;
 			int32 RemainingPDGEventCount = 0;
-			if (HAPI_RESULT_SUCCESS != FHoudiniApi::GetPDGEvents(
-				FHoudiniEngine::Get().GetSession(), CurrentContextID, PDGEventInfos.GetData(),
-				MaxNumberOfPDGEvents, &PDGEventCount, &RemainingPDGEventCount))
+
+			HAPI_Result Result = FHoudiniApi::GetPDGEvents(FHoudiniEngine::Get().GetSession(), 
+				CurrentContextID, PDGEventInfos.GetData(),  MaxNumberOfPDGEvents, &PDGEventCount, &RemainingPDGEventCount);
+
+			if (Result != HAPI_RESULT_SUCCESS)
 			{
-				HOUDINI_LOG_ERROR(TEXT("Failed to get PDG events"));
+				HOUDINI_LOG_ERROR(TEXT("Failed to get PDG events, error code: %d"), Result);
 				continue;
 			}
 
@@ -1343,7 +1290,7 @@ FHoudiniPDGManager::RefreshPDGAssetLinkUI(UHoudiniPDGAssetLink* InAssetLink)
 	AActor* ActorOwner = HAC->GetOwner();
 	if (ActorOwner != nullptr && ActorOwner->IsSelected())
 	{
-		FHoudiniEngineUtils::UpdateEditorProperties(HAC, true);
+		FHoudiniEngineUtils::UpdateEditorProperties(true);
 	}
 }
 
@@ -1695,7 +1642,7 @@ FHoudiniPDGManager::ProcessWorkItemResults()
 		if (HAC)
 		{
 			PackageParams.OuterPackage = HAC->GetComponentLevel();
-			PackageParams.HoudiniAssetName = HAC->GetHoudiniAsset() ? HAC->GetHoudiniAsset()->GetName() : FString();
+			PackageParams.HoudiniAssetName = HAC->GetHoudiniAssetName();
 			PackageParams.HoudiniAssetActorName = HAC->GetOwner()->GetActorNameOrLabel();
 			PackageParams.ComponentGUID = HAC->GetComponentGUID();
 
@@ -1915,7 +1862,7 @@ void FHoudiniPDGManager::HandleImportBGEOResultMessage(
 
 		// Construct UHoudiniOutputs
 		bool bHasUnsupportedOutputs = false;
-		TArray<UHoudiniOutput*> NewOutputs;
+		TArray<TObjectPtr<UHoudiniOutput>> NewOutputs;
 		TMap<FHoudiniOutputObjectIdentifier, FHoudiniInstancedOutputPartData> InstancedOutputPartData;
 		NewOutputs.Reserve(InMessage.Outputs.Num());
 		for (const FHoudiniPDGImportNodeOutput& Output : InMessage.Outputs)
@@ -1997,7 +1944,7 @@ void FHoudiniPDGManager::HandleImportBGEOResultMessage(
 			{
 				// Clear/remove the outputs on WorkResultObject that are supported by the commandlet, since we
 				// are going to replace them with NewOutputs now
-				TArray<UHoudiniOutput*>& CurrentOutputs = WorkResultObject->GetResultOutputs();
+				TArray<TObjectPtr<UHoudiniOutput>>& CurrentOutputs = WorkResultObject->GetResultOutputs();
 				const int32 NumCurrentOutputs = CurrentOutputs.Num();
 				for (int32 Index = 0; Index < NumCurrentOutputs; ++Index)
 				{
@@ -2218,9 +2165,32 @@ EHoudiniBGEOCommandletStatus FHoudiniPDGManager::UpdateAndGetBGEOCommandletStatu
 bool
 FHoudiniPDGManager::IsPDGAsset(const HAPI_NodeId& InAssetId)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(FHoudiniPDGManager::IsPDGAsset);
 	if (InAssetId < 0)
 		return false;
 
+	// First check if an unreal_pdg_asset detail attribute exists - and get its value 
+	// This is faster than looking at all the nodes on an HDA - especially when the HDA contains a lot of nodes/assets
+	{
+		HAPI_AttributeInfo AttribInfo;
+		FHoudiniApi::AttributeInfo_Init(&AttribInfo);
+		HAPI_Result Result = FHoudiniApi::GetAttributeInfo(
+			FHoudiniEngine::Get().GetSession(),
+			InAssetId, 0, HAPI_UNREAL_ATTRIB_PDG_ASSET, HAPI_ATTROWNER_DETAIL, &AttribInfo);
+
+		if (Result == HAPI_RESULT_SUCCESS && AttribInfo.exists)
+		{
+			TArray<int32> IntData;
+			FHoudiniHapiAccessor Accessor(InAssetId, 0, HAPI_UNREAL_ATTRIB_PDG_ASSET);
+			bool bSuccess = Accessor.GetAttributeData(HAPI_ATTROWNER_DETAIL, IntData, 0, 1);
+			if (bSuccess && !IntData.IsEmpty())
+			{
+				return (IntData[0] != 0);
+			}
+		}
+	}
+
+	// TOO LONG ON BIG HDAS!
 	// Get the list of all non bypassed TOP nodes within the current network (ignoring schedulers)
 	int32 TOPNodeCount = 0;
 	if (HAPI_RESULT_SUCCESS != FHoudiniApi::ComposeChildNodeList(
@@ -2234,13 +2204,16 @@ FHoudiniPDGManager::IsPDGAsset(const HAPI_NodeId& InAssetId)
 	if (TOPNodeCount > 0)
 		return true;
 
+	// No valid TOP node found in SOP/TOP Networks, this is not a PDG HDA
+	return false;
+	
 	/*
 	// Get all the network nodes within the asset, recursively.
 	// We're getting all networks because TOP network SOPs aren't considered being of TOP network type, but SOP type
 	int32 NetworkNodeCount = 0;
 	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::ComposeChildNodeList(
 		FHoudiniEngine::Get().GetSession(), InAssetId,
-		HAPI_NODETYPE_SOP | HAPI_NODETYPE_TOP, HAPI_NODEFLAGS_NETWORK, true, & NetworkNodeCount), false);
+		HAPI_NODETYPE_SOP | HAPI_NODETYPE_TOP, HAPI_NODEFLAGS_NETWORK | HAPI_NODEFLAGS_NON_BYPASS, false, &NetworkNodeCount), false);
 
 	if (NetworkNodeCount <= 0)
 		return false;
@@ -2250,32 +2223,6 @@ FHoudiniPDGManager::IsPDGAsset(const HAPI_NodeId& InAssetId)
 	HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetComposedChildNodeList(
 		FHoudiniEngine::Get().GetSession(), InAssetId,
 		AllNetworkNodeIDs.GetData(), NetworkNodeCount), false);
-
-	// There is currently no way to only get non bypassed nodes via HAPI
-	// So we now need to get a list of all the bypassed top nets, in order to remove them from the previous list...
-	TArray<HAPI_NodeId> AllBypassedTOPNetNodeIDs;
-	{
-		int32 BypassedTOPNetNodeCount = 0;
-		HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::ComposeChildNodeList(
-			FHoudiniEngine::Get().GetSession(), InAssetId,
-			HAPI_NODETYPE_ANY, HAPI_NODEFLAGS_NETWORK | HAPI_NODEFLAGS_BYPASS, true, &BypassedTOPNetNodeCount), false);
-
-		if (BypassedTOPNetNodeCount > 0)
-		{
-			// Get the list of all bypassed TOP Net...
-			AllBypassedTOPNetNodeIDs.SetNum(BypassedTOPNetNodeCount);
-			HOUDINI_CHECK_ERROR_RETURN(FHoudiniApi::GetComposedChildNodeList(
-				FHoudiniEngine::Get().GetSession(), InAssetId,
-				AllBypassedTOPNetNodeIDs.GetData(), BypassedTOPNetNodeCount), false);
-
-			// ... and remove them from the network list
-			for (int32 Idx = AllNetworkNodeIDs.Num() - 1; Idx >= 0; Idx--)
-			{
-				if (AllBypassedTOPNetNodeIDs.Contains(AllNetworkNodeIDs[Idx]))
-					AllNetworkNodeIDs.RemoveAt(Idx);
-			}
-		}
-	}
 
 	// For each Network we found earlier, only consider those with TOP child nodes
 	// If we find TOP nodes in a valid network, then consider this HDA a PDG HDA
@@ -2301,11 +2248,11 @@ FHoudiniPDGManager::IsPDGAsset(const HAPI_NodeId& InAssetId)
 			continue;
 		}
 
-		// Get the list of all TOP nodes within the current network (ignoring schedulers)		
+		// Get the list of all TOP nodes within the current network (ignoring schedulers)
 		int32 TOPNodeCount = 0;
 		if (HAPI_RESULT_SUCCESS != FHoudiniApi::ComposeChildNodeList(
 			FHoudiniEngine::Get().GetSession(), CurrentNodeId,
-			HAPI_NodeType::HAPI_NODETYPE_TOP, HAPI_NODEFLAGS_TOP_NONSCHEDULER, true, &TOPNodeCount))
+			HAPI_NodeType::HAPI_NODETYPE_TOP, HAPI_NODEFLAGS_TOP_NONSCHEDULER | HAPI_NODEFLAGS_NON_BYPASS, false, &TOPNodeCount))
 		{
 			continue;
 		}
@@ -2314,10 +2261,10 @@ FHoudiniPDGManager::IsPDGAsset(const HAPI_NodeId& InAssetId)
 		if (TOPNodeCount > 0)
 			return true;
 	}
-	*/
 
 	// No valid TOP node found in SOP/TOP Networks, this is not a PDG HDA
 	return false;
+	*/
 }
 
 #undef LOCTEXT_NAMESPACE

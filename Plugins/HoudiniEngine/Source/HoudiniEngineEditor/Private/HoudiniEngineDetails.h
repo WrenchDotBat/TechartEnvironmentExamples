@@ -35,6 +35,7 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Framework/SlateDelegates.h"
 #include "Widgets/Input/SButton.h"
+#include "HoudiniEngineDetails.h"
 #include "HoudiniEngineRuntimePrivatePCH.h"
 
 class IDetailCategoryBuilder;
@@ -75,6 +76,10 @@ public:
 		IDetailCategoryBuilder& HoudiniEngineCategoryBuilder,
 		const TArray<TWeakObjectPtr<UHoudiniAssetComponent>>& InHACs);
 
+	static void CreateHoudiniEngineActionWidget(
+		IDetailCategoryBuilder& HoudiniEngineCategoryBuilder,
+		const TArray<TWeakObjectPtr<UHoudiniAssetComponent>>& InHACs);
+
 	static void CreateGenerateWidgets(
 			IDetailCategoryBuilder& HoudiniEngineCategoryBuilder,
 			const TArray<TWeakObjectPtr<UHoudiniAssetComponent>>& InHACs);
@@ -95,6 +100,10 @@ public:
 		IDetailCategoryBuilder& HoudiniEngineCategoryBuilder,
 		const TArray<TWeakObjectPtr<UHoudiniAssetComponent>>& InHACs);
 
+	static void CreateNodeSyncWidgets(
+		IDetailCategoryBuilder& HoudiniEngineCategoryBuilder,
+		const TArray<TWeakObjectPtr<UHoudiniAssetComponent>>& InHACs);
+
 	static void CreateInstallInfoWindow();
 
 	static FReply ShowCookLog(const TArray<TWeakObjectPtr<UHoudiniAssetComponent>>& InHACS);
@@ -107,6 +116,9 @@ public:
 
 	/** Construct drop down menu content for Houdini asset. **/
 	//static TSharedRef< SWidget > OnGetHoudiniAssetMenuContent(TArray<UHoudiniAssetComponent*> InHACs);
+
+	static TSharedPtr<SWidget> ConstructActionMenu(
+		const TArray<TWeakObjectPtr<UHoudiniAssetComponent>>& InHACs, class IDetailLayoutBuilder*);
 
 	static void AddHeaderRowForHoudiniAssetComponent(
 		IDetailCategoryBuilder& HoudiniEngineCategoryBuilder,
@@ -127,7 +139,22 @@ public:
 	// Helper to check if InWeakObjectPointer is valid or not. If not valid, the filepath and line number where the check
 	// occurred is logged.
 	template <class T>
-	static bool IsValidWeakObjectPointer(const TWeakObjectPtr<T>& InWeakObjectPointer, const bool bInLogInvalid=false, const FString& InFilePath=FString(), const int32 InLineNumber=INDEX_NONE);
+	static bool IsValidWeakObjectPointer(
+		const TWeakObjectPtr<T>& InWeakObjectPointer,
+		const bool bInLogInvalid=false,
+		const FString& InFilePath=FString(),
+		const int32 InLineNumber=INDEX_NONE);
+
+private:
+	static void SetCookFolderPath(
+		const FText& InPathText,
+		const TWeakObjectPtr<UHoudiniAssetComponent>& InMainHAC,
+		const TArray<TWeakObjectPtr<UHoudiniAssetComponent>>& InHACs);
+
+	static void SetBakeFolderPath(
+		const FText& InPathText,
+		const TWeakObjectPtr<UHoudiniAssetComponent>& InMainHAC,
+		const TArray<TWeakObjectPtr<UHoudiniAssetComponent>>& InHACs);
 };
 
 

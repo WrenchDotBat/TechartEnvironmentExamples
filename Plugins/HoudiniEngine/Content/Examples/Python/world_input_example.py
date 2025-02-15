@@ -35,7 +35,7 @@ _g_wrapper = None
 
 
 def get_test_hda_path():
-    return "/HoudiniEngine/Examples/hda/subnet_test_2_0.subnet_test_2_0"
+    return '/HoudiniEngine/Examples/hda/subnet_test_2_0.subnet_test_2_0'
 
 
 def get_test_hda():
@@ -43,7 +43,7 @@ def get_test_hda():
 
 
 def get_geo_asset_path():
-    return "/Engine/BasicShapes/Cube.Cube"
+    return '/Engine/BasicShapes/Cube.Cube'
 
 
 def get_geo_asset():
@@ -51,7 +51,7 @@ def get_geo_asset():
 
 
 def get_cylinder_asset_path():
-    return "/Engine/BasicShapes/Cylinder.Cylinder"
+    return '/Engine/BasicShapes/Cylinder.Cylinder'
 
 
 def get_cylinder_asset():
@@ -59,7 +59,7 @@ def get_cylinder_asset():
 
 
 def configure_inputs(in_wrapper):
-    print("configure_inputs")
+    print('configure_inputs')
 
     # Unbind from the delegate
     in_wrapper.on_post_instantiation_delegate.remove_callable(configure_inputs)
@@ -77,40 +77,32 @@ def configure_inputs(in_wrapper):
     world_input = None
 
     # Set the subnet_test HDA to output its first input
-    in_wrapper.set_int_parameter_value("enable_geo", 1)
+    in_wrapper.set_int_parameter_value('enable_geo', 1)
 
 
 def print_api_input(in_input):
-    print("\t\tInput type: {0}".format(in_input.__class__))
-    print("\t\tbKeepWorldTransform: {0}".format(in_input.keep_world_transform))
-    print("\t\tbImportAsReference: {0}".format(in_input.import_as_reference))
+    print('\t\tInput type: {0}'.format(in_input.__class__))
+    print('\t\tbKeepWorldTransform: {0}'.format(in_input.keep_world_transform))
+    print('\t\tbImportAsReference: {0}'.format(in_input.import_as_reference))
     if isinstance(in_input, unreal.HoudiniPublicAPIWorldInput):
-        print("\t\tbPackBeforeMerge: {0}".format(in_input.pack_before_merge))
-        print("\t\tbExportLODs: {0}".format(in_input.export_lo_ds))
-        print("\t\tbExportSockets: {0}".format(in_input.export_sockets))
-        print("\t\tbExportColliders: {0}".format(in_input.export_colliders))
-        print(
-            "\t\tbIsWorldInputBoundSelector: {0}".format(
-                in_input.is_world_input_bound_selector
-            )
-        )
-        print(
-            "\t\tbWorldInputBoundSelectorAutoUpdate: {0}".format(
-                in_input.world_input_bound_selector_auto_update
-            )
-        )
+        print('\t\tbPackBeforeMerge: {0}'.format(in_input.pack_before_merge))
+        print('\t\tbExportLODs: {0}'.format(in_input.export_lo_ds))
+        print('\t\tbExportSockets: {0}'.format(in_input.export_sockets))
+        print('\t\tbExportColliders: {0}'.format(in_input.export_colliders))
+        print('\t\tbIsWorldInputBoundSelector: {0}'.format(in_input.is_world_input_bound_selector))
+        print('\t\tbWorldInputBoundSelectorAutoUpdate: {0}'.format(in_input.world_input_bound_selector_auto_update))
 
     input_objects = in_input.get_input_objects()
     if not input_objects:
-        print("\t\tEmpty input!")
+        print('\t\tEmpty input!')
     else:
-        print("\t\tNumber of objects in input: {0}".format(len(input_objects)))
+        print('\t\tNumber of objects in input: {0}'.format(len(input_objects)))
         for idx, input_object in enumerate(input_objects):
-            print("\t\t\tInput object #{0}: {1}".format(idx, input_object))
+            print('\t\t\tInput object #{0}: {1}'.format(idx, input_object))
 
 
 def print_inputs(in_wrapper):
-    print("print_inputs")
+    print('print_inputs')
 
     # Unbind from the delegate
     in_wrapper.on_post_processing_delegate.remove_callable(print_inputs)
@@ -120,19 +112,19 @@ def print_inputs(in_wrapper):
     parm_inputs = in_wrapper.get_input_parameters()
 
     if not node_inputs:
-        print("No node inputs found!")
+        print('No node inputs found!')
     else:
-        print("Number of node inputs: {0}".format(len(node_inputs)))
+        print('Number of node inputs: {0}'.format(len(node_inputs)))
         for input_index, input_wrapper in node_inputs.items():
-            print("\tInput index: {0}".format(input_index))
+            print('\tInput index: {0}'.format(input_index))
             print_api_input(input_wrapper)
 
     if not parm_inputs:
-        print("No parameter inputs found!")
+        print('No parameter inputs found!')
     else:
-        print("Number of parameter inputs: {0}".format(len(parm_inputs)))
+        print('Number of parameter inputs: {0}'.format(len(parm_inputs)))
         for parm_name, input_wrapper in parm_inputs.items():
-            print("\tInput parameter name: {0}".format(parm_name))
+            print('\tInput parameter name: {0}'.format(parm_name))
             print_api_input(input_wrapper)
 
 
@@ -141,10 +133,9 @@ def spawn_actors():
     # Spawn a static mesh actor and assign a cylinder to its static mesh
     # component
     actor = unreal.EditorLevelLibrary.spawn_actor_from_class(
-        unreal.StaticMeshActor, location=(0, 0, 0)
-    )
+        unreal.StaticMeshActor, location=(0, 0, 0))
     actor.static_mesh_component.set_static_mesh(get_cylinder_asset())
-    actor.set_actor_label("Cylinder")
+    actor.set_actor_label('Cylinder')
     actor.set_actor_transform(
         unreal.Transform(
             (-200, 0, 0),
@@ -152,17 +143,16 @@ def spawn_actors():
             (2, 2, 2),
         ),
         sweep=False,
-        teleport=True,
+        teleport=True
     )
     actors.append(actor)
 
     # Spawn a static mesh actor and assign a cube to its static mesh
     # component
     actor = unreal.EditorLevelLibrary.spawn_actor_from_class(
-        unreal.StaticMeshActor, location=(0, 0, 0)
-    )
+        unreal.StaticMeshActor, location=(0, 0, 0))
     actor.static_mesh_component.set_static_mesh(get_geo_asset())
-    actor.set_actor_label("Cube")
+    actor.set_actor_label('Cube')
     actor.set_actor_transform(
         unreal.Transform(
             (200, 0, 100),
@@ -170,7 +160,7 @@ def spawn_actors():
             (2, 2, 2),
         ),
         sweep=False,
-        teleport=True,
+        teleport=True
     )
     actors.append(actor)
 
@@ -191,5 +181,5 @@ def run():
     _g_wrapper.on_post_processing_delegate.add_callable(print_inputs)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     run()

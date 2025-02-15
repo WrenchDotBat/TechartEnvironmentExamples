@@ -122,6 +122,13 @@ bool FHoudiniAutomationTest::IsSupressedWarning(const FString& InWarning)
 
 void FHoudiniEditorTestUtils::InitializeTests(FHoudiniAutomationTest* Test, const TFunction<void()>& OnSuccess, const TFunction<void()>& OnFail)
 {
+	// Gpu Profiler runs out of space if we don't increase the buffer size from Unreal 5.5.
+	IConsoleVariable* ConsoleVar = IConsoleManager::Get().FindConsoleVariable(TEXT("r.GpuProfilerMaxEventBufferSizeKB"));
+	if(ConsoleVar)
+	{
+		ConsoleVar->Set(1024); 
+	}
+
 	LoadMap(Test, TEXT("/Game/TestSaved/Levels/TestLevel"), [=]
 	{
 		CreateSessionIfInvalidWithLatentRetries(Test, HoudiniEngineSessionPipeName, OnSuccess, OnFail);
@@ -213,6 +220,8 @@ void FHoudiniEditorTestUtils::InstantiateAsset(
 
 		const double CurrentTime = FPlatformTime::Seconds();
 
+		double DeltaTime = CurrentTime - StartTime;
+
 		if (IsInstantiating == false && Wrapper->GetHoudiniAssetComponent()->GetAssetState() == EHoudiniAssetState::None)
 		{
 			if (ErrorOnFail && CookSuccessfulResult == false)
@@ -240,9 +249,20 @@ void FHoudiniEditorTestUtils::InstantiateAsset(
 			}
 		}
 
-		if (CurrentTime - StartTime > TimeoutTime)
+		if (DeltaTime > TimeoutTime)
 		{
-			Test->AddError("Instantiation timeout!");
+			FString ErrorString = FString::Printf(TEXT("Instantiation timeout after %.1f seconds. \n"), DeltaTime);
+			Test->AddError(ErrorString);
+			ErrorString = FString::Printf(TEXT("IsInstantiating: %d"), IsInstantiating ? 1 : 0);
+			Test->AddError(ErrorString);
+			ErrorString = FString::Printf(TEXT("CookSuccessfulResult: %d"), CookSuccessfulResult ? 1 : 0);
+			Test->AddError(ErrorString);
+			ErrorString = FString::Printf(TEXT("TestObject->HasReachedExpectedCookCount() : %d"), TestObject->HasReachedExpectedCookCount() ? 1 : 0);
+			Test->AddError(ErrorString);
+
+			ErrorString = FString::Printf(TEXT("AssetState: %d("), static_cast<int>(Wrapper->GetHoudiniAssetComponent()->GetAssetState()));
+			Test->AddError(ErrorString);
+
 			OnFinishInstantiate(Wrapper, CookSuccessfulResult);
 			return true;
 		}
@@ -461,7 +481,11 @@ void FHoudiniEditorTestUtils::TakeScreenshotEditor(FHoudiniAutomationTest* Test,
 		FAutomationScreenshotData Data;
 		Data.Width = OutImageSize.X;
 		Data.Height = OutImageSize.Y;
+#if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 4
+		Data.ScreenShotName = ScreenshotName;
+#else
 		Data.ScreenshotName = ScreenshotName;
+#endif
 
 		// Sometimes errors on 4.25 if not offscreen
 		if (bRenderOffScreen)
@@ -1304,7 +1328,7 @@ bool FHoudiniEditorTestUtils::CreateSessionIfInvalid(const FName& SessionPipeNam
 }
 
 bool FHoudiniEditorTestUtils::CreateSessionIfInvalidWithLatentRetries(
-	FHoudiniAutomationTest* Test, const FName& SessionPipeName, const TFunction<void()>& OnSuccess,
+	FAutomationTestBase* Test, const FName& SessionPipeName, const TFunction<void()>& OnSuccess,
 	const TFunction<void()>& OnFail, const int8 NumRetries, const double TimeBetweenRetriesSeconds)
 {
 	// Check if a valid session already exists, or try to create one

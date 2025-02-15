@@ -40,7 +40,7 @@ UENUM()
 enum EHoudiniRuntimeSettingsSessionType
 {
 	// In process session.
-	HRSST_InProcess UMETA(Hidden),
+	HRSST_InProcess UMETA(Hidden, DisplayName = "In Process (experimental)"),
 
 	// TCP socket connection to Houdini Engine server.
 	HRSST_Socket UMETA(DisplayName = "TCP socket"),
@@ -50,6 +50,9 @@ enum EHoudiniRuntimeSettingsSessionType
 
 	// No session, prevents license/Engine cook
 	HRSST_None UMETA(DisplayName = "None"),
+
+	// Memory Buffer
+	HRSST_MemoryBuffer UMETA(DisplayName = "Shared Memory Buffer"),
 
 	HRSST_MAX
 };
@@ -102,7 +105,7 @@ struct HOUDINIENGINERUNTIME_API FHoudiniStaticMeshGenerationProperties
 
 	/** Physical material to use for simple collision on this body. Encodes information about density, friction etc. */
 	UPROPERTY(EditAnywhere, Category = "HoudiniMeshGeneration | StaticMeshGeneration", meta = (DisplayName = "Simple Collision Physical Material"))
-	UPhysicalMaterial * GeneratedPhysMaterial;
+	TObjectPtr<UPhysicalMaterial>  GeneratedPhysMaterial;
 
 	/** Default properties of the body instance, copied into objects on instantiation, was URB_BodyInstance */
 	UPROPERTY(EditAnywhere, Category = "HoudiniMeshGeneration | StaticMeshGeneration", meta = (FullyExpand = "true"))
@@ -134,11 +137,11 @@ struct HOUDINIENGINERUNTIME_API FHoudiniStaticMeshGenerationProperties
 
 	/** Default settings when using this mesh for instanced foliage. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Instanced, Category = "HoudiniMeshGeneration | StaticMeshGeneration", meta = (DisplayName = "Foliage Default Settings"))
-	UFoliageType_InstancedStaticMesh* GeneratedFoliageDefaultSettings = nullptr;
+	TObjectPtr<UFoliageType_InstancedStaticMesh> GeneratedFoliageDefaultSettings = nullptr;
 
 	/** Array of user data stored with the asset. */
 	UPROPERTY(EditAnywhere, AdvancedDisplay, Instanced, Category = "HoudiniMeshGeneration | StaticMeshGeneration", meta = (DisplayName = "Asset User Data"))
-	TArray<UAssetUserData*> GeneratedAssetUserData;
+	TArray<TObjectPtr<UAssetUserData>> GeneratedAssetUserData;
 };
 
 
@@ -180,19 +183,36 @@ protected:
 		UPROPERTY(GlobalConfig, EditAnywhere, Category = Session)
 		TEnumAsByte<enum EHoudiniRuntimeSettingsSessionType> SessionType;
 
+		// The number of threaded sessions to be used to send/receive data (default: 1)
+		UPROPERTY(GlobalConfig, EditAnywhere, Category = Session, meta = (ClampMin = "1", ClampMax = "128"))
+		int32 NumSessions;
+
+		// The name of the machine that hosts the houdini server (default: localhost)
 		UPROPERTY(GlobalConfig, EditAnywhere, Category = Session)
 		FString ServerHost;
 
+		// The port to be used for a TCP socket session (default: 9090)
 		UPROPERTY(GlobalConfig, EditAnywhere, Category = Session)
 		int32 ServerPort;
 
-		UPROPERTY(GlobalConfig, EditAnywhere, Category = Session)
+		// The name of the server used for Name Pipe or Shared Memory buffer session (default: hapi)
+		UPROPERTY(GlobalConfig, EditAnywhere, Category = Session, meta = (DisplayName = "Server Name"))
 		FString ServerPipeName;
 
-		// Whether to automatically start a HARS process
+		// The size (in MB) of the Memory buffer used for shared memory buffer sessions (default: 500)
+		// Value are clamped between 1MB - 128GB and UI between 1MB and 16GB
+		UPROPERTY(GlobalConfig, EditAnywhere, Category = Session, meta = (ClampMin = "1", ClampMax = "131072", UIMin = "1", UIMax = "16384"))
+		int64 SharedMemoryBufferSize;
+
+		// Indicates if the shared memory buffer session use a cyclic (ring) buffer. If disabled, the buffer will be of fixed size. (default: enabled)
+		UPROPERTY(GlobalConfig, EditAnywhere, Category = Session)
+		bool bSharedMemoryBufferCyclic;
+
+		// Automatically try to start a HARS process matching the current session settings when restarting the session (default: enabled)
 		UPROPERTY(GlobalConfig, EditAnywhere, Category = Session)
 		bool bStartAutomaticServer;
 
+		// The timeout (in ms) to be used when attempting to create a Houdini Engine Session (default: 3000)
 		UPROPERTY(GlobalConfig, EditAnywhere, Category = Session)
 		float AutomaticServerTimeout;
 
@@ -253,22 +273,11 @@ protected:
 		FString DefaultBakeFolder;
 
 		//-------------------------------------------------------------------------------------------------------------
-		// Input options.
+		// Deprecated instance settings.
 		//-------------------------------------------------------------------------------------------------------------
 
-		// EXPERIMENTAL: Enable the reference counted input system. Not all input types are currently supported.
-		UPROPERTY(GlobalConfig, EditAnywhere, Category = Inputs, Experimental)
-		bool bEnableTheReferenceCountedInputSystem;		
-
-		//-------------------------------------------------------------------------------------------------------------
-		// Parameter options.
-		//-------------------------------------------------------------------------------------------------------------
-
-		/* Deprecated!
-		// Forces the treatment of ramp parameters as multiparms.
-		UPROPERTY(GlobalConfig, EditAnywhere, Category = Parameters)
-		bool bTreatRampParametersAsMultiparms;
-		*/
+		UPROPERTY(GlobalConfig, EditAnywhere, Category = Cooking)
+		bool bEnableDeprecatedInstanceVariations;
 
 		//-------------------------------------------------------------------------------------------------------------
 		// Geometry Marshalling
@@ -352,7 +361,7 @@ protected:
 
 		/// Physical material to use for simple collision of new Houdini Assets. Encodes information about density, friction etc.
 		UPROPERTY(EditAnywhere, Category = "GeneratedStaticMeshSettings", meta = (DisplayName = "Simple Collision Physical Material"))
-		UPhysicalMaterial * PhysMaterial;
+		TObjectPtr<UPhysicalMaterial>  PhysMaterial;
 
 		/// Default properties of the body instance
 		UPROPERTY(GlobalConfig, EditAnywhere, Category = "GeneratedStaticMeshSettings", meta = (FullyExpand = "true"))
@@ -392,11 +401,11 @@ protected:
 
 		/// Default settings when using new Houdini Asset mesh for instanced foliage.
 		UPROPERTY(EditAnywhere, AdvancedDisplay, Instanced, Category = "GeneratedStaticMeshSettings", meta = (DisplayName = "Foliage Default Settings"))
-		UFoliageType_InstancedStaticMesh * FoliageDefaultSettings;
+		TObjectPtr<UFoliageType_InstancedStaticMesh>  FoliageDefaultSettings;
 
 		/// Array of user data stored with the new Houdini Asset.
 		UPROPERTY(EditAnywhere, AdvancedDisplay, Instanced, Category = "GeneratedStaticMeshSettings", meta = (DisplayName = "Asset User Data"))
-		TArray<UAssetUserData *> AssetUserData;
+		TArray<TObjectPtr<UAssetUserData> > AssetUserData;
 
 		//-------------------------------------------------------------------------------------------------------------
 		// Static Mesh build settings. 
@@ -475,26 +484,26 @@ protected:
 		UPROPERTY(GlobalConfig, EditAnywhere, Category = "PDG Settings", Meta = (DisplayName = "Async Importer Enabled"))
 		bool bPDGAsyncCommandletImportEnabled;
 
-		//-------------------------------------------------------------------------------------------------------------
-		// Legacy
-		//-------------------------------------------------------------------------------------------------------------
-		// Whether to enable backward compatibility
-		UPROPERTY(GlobalConfig, EditAnywhere, Category = "Legacy", Meta = (DisplayName = "Enable backward compatibility with Version 1"))
-		bool bEnableBackwardCompatibility;
 
-		// Automatically rebuild legacy HAC
-		UPROPERTY(GlobalConfig, EditAnywhere, Category = "Legacy", meta = (DisplayName = "Automatically rebuild legacy Houdini Asset Components", EditCondition = "bEnableBackwardCompatibility"))
-		bool bAutomaticLegacyHDARebuild;
+		//-------------------------------------------------------------------------------------------------------------
+		// Houdini Tools Paths
+		//-------------------------------------------------------------------------------------------------------------
+
+		// Project-specific search paths should be search for HoudiniTools packages, inside of Unreal.
+		// Each subdirectory will be considered for a HoudiniTools package.
+		UPROPERTY(GlobalConfig, EditAnywhere, Category = HoudiniTools)
+		TArray<FString> HoudiniToolsSearchPath;
 
 		//-------------------------------------------------------------------------------------------------------------
 		// Custom Houdini Location
 		//-------------------------------------------------------------------------------------------------------------
+
 		// Whether to use custom Houdini location.
-		UPROPERTY(GlobalConfig, EditAnywhere, Category = HoudiniLocation, Meta = (DisplayName = "Use custom Houdini location (requires restart)"))
+		UPROPERTY(GlobalConfig, EditAnywhere, Category = HoudiniLocation, Meta = (DisplayName = "Use custom Houdini location (requires restart)", ConfigRestartRequired=true))
 		bool bUseCustomHoudiniLocation;
 
 		// Custom Houdini location (where HAPI library is located).
-		UPROPERTY(GlobalConfig, EditAnywhere, Category = HoudiniLocation, Meta = (DisplayName = "Custom Houdini location"))
+		UPROPERTY(GlobalConfig, EditAnywhere, Category = HoudiniLocation, Meta = (EditCondition = "bUseCustomHoudiniLocation", DisplayName = "Custom Houdini location", ConfigRestartRequired=true))
 		FDirectoryPath CustomHoudiniLocation;
 
 		// Select the Houdini executable to be used when opening session sync or opening hip files
