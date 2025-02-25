@@ -222,6 +222,10 @@
 			]
 		},
 		{
+			"Name": "iozhContentValidator",
+			"Enabled": true
+		},
+		{
 			"Name": "OnlineBase",
 			"Enabled": false
 		},
