@@ -115,10 +115,6 @@
 			"Enabled": false
 		},
 		{
-			"Name": "AutomationUtils",
-			"Enabled": false
-		},
-		{
 			"Name": "InterchangeTests",
 			"Enabled": false
 		},
@@ -183,10 +179,6 @@
 		},
 		{
 			"Name": "ChaosNiagara",
-			"Enabled": false
-		},
-		{
-			"Name": "ChaosEditor",
 			"Enabled": false
 		},
 		{
@@ -375,6 +367,34 @@
 		},
 		{
 			"Name": "StaticMeshEditorModeling",
+			"Enabled": true
+		},
+		{
+			"Name": "PythonFoundationPackages",
+			"Enabled": true
+		},
+		{
+			"Name": "PythonAutomationTest",
+			"Enabled": true
+		},
+		{
+			"Name": "GeometryScripting",
+			"Enabled": true
+		},
+		{
+			"Name": "ScriptableToolsEditorMode",
+			"Enabled": true
+		},
+		{
+			"Name": "ScriptableToolsFramework",
+			"Enabled": true
+		},
+		{
+			"Name": "PCG",
+			"Enabled": true
+		},
+		{
+			"Name": "PCGGeometryScriptInterop",
 			"Enabled": true
 		}
 	]

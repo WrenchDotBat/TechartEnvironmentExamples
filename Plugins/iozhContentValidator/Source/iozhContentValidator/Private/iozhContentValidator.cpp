@@ -30,7 +30,7 @@ void FiozhContentValidatorModule::StartupModule()
 
 	UToolMenus::RegisterStartupCallback(FSimpleMulticastDelegate::FDelegate::CreateRaw(this, &FiozhContentValidatorModule::RegisterMenus));
 
-	FCoreUObjectDelegates::OnObjectPreSave.AddUObject(this, &FiozhContentValidatorModule::OnPreSave);
+//	FCoreUObjectDelegates::OnObjectPreSave.AddUObject(this, &FiozhContentValidatorModule::OnPreSave);
 
 }
 
