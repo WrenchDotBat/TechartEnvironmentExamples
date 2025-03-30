@@ -1,0 +1,1 @@
+UnrealEditor.exe "../../../UnrealProjects/ProjectName/ProjectName.uproject" -run=pythonscript -script="PythonScript.py" -log
