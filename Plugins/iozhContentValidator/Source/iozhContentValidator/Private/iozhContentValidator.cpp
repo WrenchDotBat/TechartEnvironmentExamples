@@ -20,11 +20,13 @@ void FiozhContentValidatorModule::StartupModule()
 	FiozhContentValidatorStyle::ReloadTextures();
 
 	FiozhContentValidatorCommands::Register();
+
+	//FCoreUObjectDelegates::OnObjectPostSave.AddRaw(this, &FiozhContentValidatorModule::OnPostSave);
 	
 	PluginCommands = MakeShareable(new FUICommandList);
 
 	PluginCommands->MapAction(
-		FiozhContentValidatorCommands::Get().PluginAction,
+		FiozhContentValidatorCommands::Get().PluginAction,	
 		FExecuteAction::CreateRaw(this, &FiozhContentValidatorModule::PluginButtonClicked),
 		FCanExecuteAction());
 
@@ -34,8 +36,53 @@ void FiozhContentValidatorModule::StartupModule()
 
 }
 
+void FiozhContentValidatorModule::OnPostSave(UObject* InObject)
+{
+	if (!InObject)
+		return;
+
+	FString PythonScriptPath = TEXT("/Game/Python/your_script.py");
+	FString Parameters = FString::Printf(TEXT("asset_path=%s"), *InObject->GetPathName());
+/*
+	IPythonScriptPlugin::Get()->ExecPythonCommand(*FString::Printf(
+		TEXT("import unreal\n"
+			 "unreal.PythonScriptLibrary.execute_python_script('%s', '%s')"),
+		*PythonScriptPath,
+		*Parameters
+	));
+	*/
+}
+
 /*void FiozhContentValidatorModule::OnPreSave(UObject* InObject, FObjectPreSaveContext InObjectPreSaveContext)
 {
+}#include "PythonScriptPlugin/Public/PythonScriptPlugin.h"
+
+void FiozhContentValidatorModule::StartupModule()
+{
+    // Существующий код...
+    
+    // Подписываемся на событие сохранения
+    FCoreUObjectDelegates::OnObjectPreSave.AddRaw(this, &FiozhContentValidatorModule::OnPreSave);
+}
+
+void FiozhContentValidatorModule::OnPreSave(UObject* InObject, FObjectPreSaveContext InObjectPreSaveContext)
+{
+    if (!InObject)
+        return;
+
+    // Получаем путь к скрипту относительно папки Content/Python
+    FString PythonScriptPath = TEXT("/Game/Python/your_script.py");
+    
+    // Создаем параметры для передачи в скрипт
+    FString Parameters = FString::Printf(TEXT("asset_path=%s"), *InObject->GetPathName());
+    
+    // Выполняем Python-скрипт
+    IPythonScriptPlugin::Get()->ExecPythonCommand(*FString::Printf(
+        TEXT("import unreal\n"
+             "unreal.PythonScriptLibrary.execute_python_script('%s', '%s')"),
+        *PythonScriptPath,
+        *Parameters
+    ));
 }
 */
 
@@ -51,6 +98,7 @@ void FiozhContentValidatorModule::ShutdownModule()
 	FiozhContentValidatorStyle::Shutdown();
 
 	FiozhContentValidatorCommands::Unregister();
+	//FCoreUObjectDelegates::OnObjectPostSave.RemoveAll(this);
 }
 
 void FiozhContentValidatorModule::PluginButtonClicked()

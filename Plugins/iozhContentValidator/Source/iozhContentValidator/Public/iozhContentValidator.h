@@ -13,6 +13,7 @@ public:
 
 	/** IModuleInterface implementation */
 	virtual void StartupModule() override;
+	void OnPostSave(UObject* InObject);
 	//void OnPreSave(UObject* InObject, class FObjectPreSaveContext InObjectPreSaveContext);
 	virtual void ShutdownModule() override;
 	
